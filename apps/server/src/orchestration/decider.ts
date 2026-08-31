@@ -892,6 +892,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.start": {
+      if (isImportedAgentSessionMessageId(command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message id '${command.message.messageId}' uses the reserved imported-session namespace.`,
+        });
+      }
       const targetThread = yield* requireThread({
         readModel,
         command,
@@ -1258,7 +1264,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.archivedAt !== null ||
         thread.messages.length > 0 ||
         thread.latestTurn !== null ||
-        thread.session !== null
+        thread.session !== null ||
+        hasOpenBlockingRequest(thread)
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
