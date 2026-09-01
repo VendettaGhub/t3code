@@ -27,6 +27,22 @@ describe("mobile background activity", () => {
     }),
   );
 
+  it.effect("retains provider limits subscriptions as diagnostics demand", () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("mobile-provider-limits-environment");
+      const release = yield* observeMobileBackgroundActivitySubscription({
+        environmentId,
+        method: WS_METHODS.subscribeProviderLimits,
+        input: {},
+      });
+
+      expect(retainedMobileBackgroundScopes(environmentId)).toEqual([{ type: "diagnostics" }]);
+
+      yield* release;
+      expect(retainedMobileBackgroundScopes(environmentId)).toEqual([]);
+    }),
+  );
+
   it.effect("keeps delimiter-containing environment and scope values distinct", () =>
     Effect.gen(function* () {
       const firstEnvironmentId = EnvironmentId.make("a");
