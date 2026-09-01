@@ -2,13 +2,41 @@ import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ProviderLimitsState, ServerConfig } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import type { ProviderLimitsEnvironmentState, QuotaProvider } from "../components/usage/ProviderLimitsPanel.logic";
 import { environmentPresentations } from "./presentation";
+import { createProviderLimitsAutoRefresh } from "./providerLimitsAutoRefresh";
 import { useEnvironmentQuery } from "./query";
 import { serverEnvironment } from "./server";
+
+function useProviderLimitsRefresh(refresh: () => void) {
+  const refreshRef = useRef(refresh);
+  const controllerRef = useRef<ReturnType<typeof createProviderLimitsAutoRefresh> | null>(null);
+
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(() => {
+    const controller = createProviderLimitsAutoRefresh(() => refreshRef.current());
+    controllerRef.current = controller;
+    return () => {
+      controller.stop();
+      controllerRef.current = null;
+    };
+  }, []);
+
+  return useCallback(() => {
+    const controller = controllerRef.current;
+    if (controller === null) {
+      refreshRef.current();
+      return;
+    }
+    controller.refreshNow();
+  }, []);
+}
 
 function accountIdForProvider(
   provider: QuotaProvider,
@@ -72,17 +100,18 @@ export function useProviderLimits(environmentId: EnvironmentId | null) {
     target === null ? null : serverEnvironment.providerLimitsRefresh(target),
   );
   const data: ProviderLimitsState | null = live.data ?? initial.data;
+  const refresh = useProviderLimitsRefresh(initial.refresh);
   return {
     data,
     error: live.error ?? initial.error,
     isPending: data === null && (live.isPending || initial.isPending),
-    refresh: initial.refresh,
+    refresh,
   };
 }
 
 export function useAllProviderLimits() {
   const environments = useAtomValue(allProviderLimitsAtom);
-  const refresh = useCallback(() => {
+  const refreshAll = useCallback(() => {
     for (const environment of environments) {
       appAtomRegistry.refresh(
         serverEnvironment.providerLimitsRefresh({
@@ -92,5 +121,6 @@ export function useAllProviderLimits() {
       );
     }
   }, [environments]);
+  const refresh = useProviderLimitsRefresh(refreshAll);
   return { environments, refresh };
 }
