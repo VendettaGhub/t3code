@@ -40,6 +40,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
+import { negotiateUsageSummary } from "./usageCompatibility.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
@@ -438,7 +439,7 @@ export const make = Effect.gen(function* () {
     const readAt = yield* DateTime.now;
     const finishedAtMs = yield* Clock.currentTimeMillis;
 
-    return {
+    const summary = {
       contractVersion: USAGE_CONTRACT_VERSION,
       readAt: DateTime.formatIso(readAt),
       timeZone: input.timeZone,
@@ -457,6 +458,8 @@ export const make = Effect.gen(function* () {
       },
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
     } satisfies UsageSummary;
+
+    return negotiateUsageSummary(summary, input.usageContractVersion);
   });
 
   return { readSummary } as const;

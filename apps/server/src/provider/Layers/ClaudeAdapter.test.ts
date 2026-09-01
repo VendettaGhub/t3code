@@ -57,6 +57,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public usageCalls = 0;
   public closeCalls = 0;
   public closeError: unknown | undefined;
 
@@ -104,6 +105,24 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = async () => {
+    this.usageCalls += 1;
+    return {
+      session: {
+        total_cost_usd: 0,
+        total_api_duration_ms: 0,
+        total_duration_ms: 0,
+        total_lines_added: 0,
+        total_lines_removed: 0,
+        model_usage: {},
+      },
+      subscription_type: "max",
+      rate_limits_available: true,
+      rate_limits: { five_hour: { utilization: 31, resets_at: null } },
+      behaviors: null,
+    };
   };
 
   readonly close = (): void => {
@@ -267,6 +286,44 @@ const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 
 describe("ClaudeAdapterLive", () => {
+  it.effect("reads Claude plan limits without an active Claude thread", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      assert.ok(adapter.readProviderLimits);
+      const response = yield* adapter.readProviderLimits();
+      assert.equal(typeof response, "object");
+      assert.equal(harness.query.usageCalls, 1);
+      assert.equal(harness.query.closeCalls, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("reads Claude plan limits through the SDK on-demand usage API", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.ok(adapter.readProviderLimits);
+      const response = yield* adapter.readProviderLimits();
+      assert.equal(typeof response, "object");
+      const value = response as {
+        readonly subscription_type?: unknown;
+        readonly rate_limits?: { readonly five_hour?: { readonly utilization?: unknown } };
+      };
+      assert.equal(value.subscription_type, "max");
+      assert.equal(value.rate_limits?.five_hour?.utilization, 31);
+      assert.equal(harness.query.usageCalls, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

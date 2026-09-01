@@ -123,6 +123,9 @@ export interface ProviderAdapterShape<TError> {
     input: ProviderUploadFeedbackInput,
   ) => Effect.Effect<ProviderUploadFeedbackResult, TError>;
 
+  /** Read live subscription quota data when the provider exposes it. */
+  readonly readProviderLimits?: (threadId?: ThreadId) => Effect.Effect<unknown, TError>;
+
   /**
    * Stop all sessions owned by this adapter.
    */

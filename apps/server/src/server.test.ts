@@ -5068,6 +5068,29 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes websocket provider limits subscription and refresh RPCs", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const { snapshot, refreshed } = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const snapshot = yield* client[WS_METHODS.subscribeProviderLimits]({}).pipe(
+              Stream.runHead,
+            );
+            const refreshed = yield* client[WS_METHODS.serverRefreshProviderLimits]({});
+            return { snapshot, refreshed };
+          }),
+        ),
+      );
+
+      assertTrue(Option.isSome(snapshot));
+      assert.deepEqual(snapshot.value, {});
+      assert.deepEqual(refreshed, {});
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc subscribeServerConfig emits provider status updates", () =>
     Effect.gen(function* () {
       const nextProviders = [

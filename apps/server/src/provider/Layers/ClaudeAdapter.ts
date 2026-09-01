@@ -14,6 +14,7 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type SDKMessage,
+  type SDKControlGetUsageResponse,
   type SDKResultMessage,
   type SettingSource,
   type SDKUserMessage,
@@ -83,6 +84,7 @@ import {
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
   normalizeClaudeCliEffort,
+  buildClaudeCapabilitiesProbeQueryOptions,
   resolveClaudeApiModelId,
   resolveClaudeContextWindow,
   resolveClaudeEffort,
@@ -321,6 +323,8 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<SDKControlGetUsageResponse>;
+  readonly initializationResult?: () => Promise<unknown>;
   readonly close: () => void;
 }
 
@@ -333,6 +337,10 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly readProviderLimitsWithoutSession?: () => Effect.Effect<
+    SDKControlGetUsageResponse,
+    ProviderAdapterError
+  >;
 }
 
 function isUuid(value: string): boolean {
@@ -4678,6 +4686,74 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const listSessions: ClaudeAdapterShape["listSessions"] = () =>
     Effect.sync(() => Array.from(sessions.values(), ({ session }) => ({ ...session })));
 
+  const readProviderLimits: NonNullable<ClaudeAdapterShape["readProviderLimits"]> = (threadId) =>
+    Effect.gen(function* () {
+      const context =
+        threadId === undefined
+          ? Array.from(sessions.values()).findLast((candidate) => !candidate.stopped)
+          : sessions.get(threadId);
+      if (!context || context.stopped) {
+        if (threadId !== undefined) {
+          return yield* new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId,
+          });
+        }
+        if (options?.readProviderLimitsWithoutSession !== undefined) {
+          return yield* options.readProviderLimitsWithoutSession();
+        }
+        const abort = new AbortController();
+        let standaloneQuery: ClaudeQueryRuntime | undefined;
+        return yield* Effect.tryPromise({
+          try: async () => {
+            standaloneQuery = createQuery({
+              // Never yield: initialize local Claude IPC without sending a prompt.
+              // oxlint-disable-next-line require-yield
+              prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+                await new Promise<void>((resolve) => {
+                  if (abort.signal.aborted) return resolve();
+                  abort.signal.addEventListener("abort", () => resolve(), { once: true });
+                });
+              })(),
+              options: buildClaudeCapabilitiesProbeQueryOptions({
+                executablePath: claudeSdkExecutablePath,
+                abortController: abort,
+                environment: claudeEnvironment,
+                cwd: serverConfig.cwd,
+              }),
+            });
+            await standaloneQuery.initializationResult?.();
+            const readUsage =
+              standaloneQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+            if (readUsage === undefined) {
+              throw new Error("The embedded Claude SDK does not expose live plan usage.");
+            }
+            return await readUsage.call(standaloneQuery);
+          },
+          catch: (cause) => toRequestError(ThreadId.make("provider-limits"), "usage/get", cause),
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (!abort.signal.aborted) abort.abort();
+              standaloneQuery?.close();
+            }),
+          ),
+        );
+      }
+      const readUsage = context.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+      if (readUsage === undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "usage/get",
+          detail: "The embedded Claude SDK does not expose live plan usage.",
+        });
+      }
+      return yield* Effect.tryPromise({
+        try: () => readUsage.call(context.query),
+        catch: (cause) => toRequestError(context.session.threadId, "usage/get", cause),
+      });
+    });
+
   const hasSession: ClaudeAdapterShape["hasSession"] = (threadId) =>
     Effect.sync(() => {
       const context = sessions.get(threadId);
@@ -4726,6 +4802,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     respondToUserInput,
     stopSession,
     listSessions,
+    readProviderLimits,
     hasSession,
     stopAll,
     get streamEvents() {

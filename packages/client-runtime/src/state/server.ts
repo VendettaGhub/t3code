@@ -762,6 +762,16 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeResourceTelemetry,
       idleTtlMs: 0,
     }),
+    providerLimits: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:provider-limits",
+      tag: WS_METHODS.subscribeProviderLimits,
+      idleTtlMs: 0,
+    }),
+    providerLimitsRefresh: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:provider-limits-refresh",
+      tag: WS_METHODS.serverRefreshProviderLimits,
+      staleTimeMs: 60_000,
+    }),
     resourceTelemetryHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry-history",
       tag: WS_METHODS.serverGetResourceTelemetryHistory,
