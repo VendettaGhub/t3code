@@ -128,6 +128,7 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { ProviderLimitChips } from "./ProviderLimitChips";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -4176,6 +4177,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       />
                     </>
                   )}
+                  <ProviderLimitChips
+                    environmentId={environmentId}
+                    selectedModel={selectedModelForPickerWithCustomFallback}
+                    compact={isComposerFooterCompact}
+                    {...(activeThread?.latestTurn?.startedAt
+                      ? { activeTurnStartedAt: Date.parse(activeThread.latestTurn.startedAt) }
+                      : {})}
+                  />
                 </div>
 
                 {/* Right side: send / stop button */}

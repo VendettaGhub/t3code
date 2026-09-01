@@ -35,6 +35,22 @@ describe("wasRecentlyInteracted", () => {
     }),
   );
 
+  it.effect("retains provider limits subscriptions as diagnostics demand", () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("provider-limits-observation-test");
+      const release = yield* observeBackgroundActivitySubscription({
+        environmentId,
+        method: WS_METHODS.subscribeProviderLimits,
+        input: {},
+      });
+
+      expect(retainedBackgroundScopes(environmentId)).toEqual([{ type: "diagnostics" }]);
+
+      yield* release;
+      expect(retainedBackgroundScopes(environmentId)).toEqual([]);
+    }),
+  );
+
   it.effect("keeps delimiter-containing environment and scope values distinct", () =>
     Effect.gen(function* () {
       const firstEnvironmentId = EnvironmentId.make("a");
