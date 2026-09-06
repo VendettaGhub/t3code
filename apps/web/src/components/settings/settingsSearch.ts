@@ -179,6 +179,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "close-to-tray",
+    title: "Desktop: keep running in system tray when closed",
+    to: "/settings/general",
+    desktopOnly: true,
+  },
+  {
     id: "text-generation-model",
     title: "Text generation model",
     to: "/settings/general",
@@ -298,6 +304,8 @@ export function searchSettings(
   return items.filter(
     (item) =>
       (isElectron || item.desktopOnly !== true) &&
+      (item.id !== "close-to-tray" ||
+        (typeof navigator !== "undefined" && /Win/i.test(navigator.platform))) &&
       normalizeSearchText(item.title).includes(normalizedQuery),
   );
 }

@@ -28,6 +28,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { makeQuitHoldHandler } from "./QuitHold.ts";
+import { installWindowTray } from "./windowTray.ts";
 
 const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
@@ -595,6 +596,50 @@ export const make = Effect.gen(function* () {
     window.on("close", () => {
       runFork(flushBoundsPersist);
     });
+
+    if (environment.platform === "win32" && iconOption.icon) {
+      try {
+        installWindowTray({
+          app: Electron.app,
+          updater: Electron.autoUpdater,
+          window,
+          isEnabled: () =>
+            runPromise(
+              clientSettings.get.pipe(
+                Effect.map(
+                  Option.match({
+                    onNone: () => DEFAULT_CLIENT_SETTINGS.closeToTray,
+                    onSome: (settings) => settings.closeToTray,
+                  }),
+                ),
+              ),
+            ),
+          onError: (cause) =>
+            runFork(logWindowWarning("could not read close-to-tray preference", { cause })),
+          createTray: ({ open, quit }) => {
+            const tray = new Electron.Tray(iconOption.icon);
+            try {
+              tray.setToolTip(environment.displayName);
+              tray.setContextMenu(
+                Electron.Menu.buildFromTemplate([
+                  { label: "Open T3", click: open },
+                  { type: "separator" },
+                  { label: "Quit T3", click: quit },
+                ]),
+              );
+              return tray;
+            } catch (cause) {
+              tray.destroy();
+              throw cause;
+            }
+          },
+        });
+      } catch (cause) {
+        yield* logWindowWarning("tray unavailable; keeping normal window close behavior", {
+          cause,
+        });
+      }
+    }
 
     if (environment.platform === "darwin") {
       window.on("enter-full-screen", () => {

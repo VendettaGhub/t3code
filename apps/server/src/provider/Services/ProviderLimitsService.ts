@@ -15,7 +15,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { subscribeBeforeSnapshotWithoutMutex } from "../../utils/subscribeBeforeSnapshot.ts";
 
 import { ProviderAdapterRegistry } from "./ProviderAdapterRegistry.ts";
 import { ProviderService } from "./ProviderService.ts";
@@ -71,7 +73,12 @@ function sparseMerge(previous: unknown, incoming: unknown): unknown {
   return merged;
 }
 
-export function mergeCodexRateLimits(baseline: unknown, update: unknown): UnknownRecord {
+export function mergeCodexRateLimits(
+  baseline: unknown,
+  update: unknown,
+  source: "read" | "event" = "event",
+): UnknownRecord {
+  if (source === "read") return record(update) ?? {};
   return (record(sparseMerge(baseline, update)) ?? {}) as UnknownRecord;
 }
 
@@ -155,15 +162,15 @@ export function normalizeCodexLimits(
   const root = record(input) ?? {};
   const defaultInput = record(root.rateLimits);
   const defaultBucket = normalizeCodexBucket("codex", defaultInput, false);
-  const buckets = defaultBucket === undefined ? [] : [defaultBucket];
-  const seen = new Set(buckets.map((bucket) => bucket.bucketId));
+  const byBucketId = new Map<string, ProviderLimitBucket>();
+  if (defaultBucket !== undefined) byBucketId.set(defaultBucket.bucketId, defaultBucket);
   const byId = record(root.rateLimitsByLimitId);
   for (const [limitId, value] of Object.entries(byId ?? {})) {
     const bucket = normalizeCodexBucket(limitId, value, true);
-    if (bucket === undefined || seen.has(bucket.bucketId)) continue;
-    seen.add(bucket.bucketId);
-    buckets.push(bucket);
+    if (bucket === undefined) continue;
+    byBucketId.set(bucket.bucketId, bucket);
   }
+  const buckets = Array.from(byBucketId.values());
   return {
     provider: "codex",
     buckets,
@@ -342,7 +349,8 @@ function normalizeClaudeStructuredSpend(value: unknown): ProviderLimitBucket | u
   if (usedMinor === undefined || limitMinor === undefined) return undefined;
   const exponent = finiteNumber(usedInput?.exponent) ?? finiteNumber(limitInput?.exponent) ?? 0;
   const divisor = exponent >= 0 && exponent <= 6 ? 10 ** exponent : 1;
-  const usedPercent = finiteNumber(input?.percent) ?? (limitMinor === 0 ? 0 : (usedMinor / limitMinor) * 100);
+  const usedPercent =
+    finiteNumber(input?.percent) ?? (limitMinor === 0 ? 0 : (usedMinor / limitMinor) * 100);
   const currency = stringValue(usedInput?.currency) ?? stringValue(limitInput?.currency);
   return {
     bucketId: "extra_usage",
@@ -444,7 +452,12 @@ export function mergeProviderSnapshot(
   baseline: ProviderLimitsSnapshot | undefined,
   update: ProviderLimitsSnapshot,
 ): ProviderLimitsSnapshot {
-  if (baseline === undefined || baseline.provider !== update.provider || update.source === "read")
+  if (
+    baseline === undefined ||
+    baseline.provider !== update.provider ||
+    update.source === "read" ||
+    update.authState !== "ok"
+  )
     return update;
   const byId = new Map(baseline.buckets.map((bucket) => [bucket.bucketId, bucket]));
   for (const bucket of update.buckets) byId.set(bucket.bucketId, bucket);
@@ -500,11 +513,16 @@ export function consumeHybridAuditRecord(
     const requestedProvider = auditProvider(input?.targetProvider);
     if (requestedProvider !== undefined && !path.includes("/count_tokens")) {
       state.routes.set(requestId, { requestedProvider, path });
+      // Interrupted/legacy router runs may never emit a terminal record.
+      if (state.routes.size > 512) {
+        const oldest = state.routes.keys().next().value;
+        if (oldest !== undefined) state.routes.delete(oldest);
+      }
     }
     return null;
   }
   if (event === "error") {
-    state.routes.delete(requestId);
+    if (input?.willRetry !== true) state.routes.delete(requestId);
     return null;
   }
   if (event !== "result") return null;
@@ -512,6 +530,9 @@ export function consumeHybridAuditRecord(
   const provider = auditProvider(input?.targetProvider);
   const statusCode = finiteNumber(input?.statusCode);
   const model = stringValue(input?.targetModel);
+  // New routers explicitly mark terminal attempts, including exhausted 429/5xx.
+  // Keep legacy transient records until their following result arrives.
+  if (input?.willRetry === false) state.routes.delete(requestId);
   if (
     route === undefined ||
     provider === undefined ||
@@ -538,10 +559,14 @@ export function consumeHybridAuditRecord(
 export interface ProviderLimitsServiceShape {
   readonly latest: Effect.Effect<ProviderLimitsState>;
   readonly changes: Stream.Stream<ProviderLimitsState>;
-  readonly subscribe: Effect.Effect<{
-    readonly latest: ProviderLimitsState;
-    readonly changes: Stream.Stream<ProviderLimitsState>;
-  }>;
+  readonly subscribe: Effect.Effect<
+    {
+      readonly latest: ProviderLimitsState;
+      readonly changes: Stream.Stream<ProviderLimitsState>;
+    },
+    never,
+    Scope.Scope
+  >;
   readonly refresh: Effect.Effect<ProviderLimitsState>;
   readonly updateActualRoute: (route: ProviderLimitsActualRoute) => Effect.Effect<void>;
 }
@@ -593,7 +618,7 @@ export const makeProviderLimitsService = Effect.fn("makeProviderLimitsService")(
       const capturedAt = DateTime.toEpochMillis(yield* DateTime.now);
       if (provider === "codex") {
         const merged = yield* Ref.modify(codexRawRef, (previous) => {
-          const next = mergeCodexRateLimits(previous, payload);
+          const next = mergeCodexRateLimits(previous, payload, source);
           return [next, next] as const;
         });
         yield* applySnapshot(normalizeCodexLimits(merged, capturedAt, source));
@@ -603,16 +628,57 @@ export const makeProviderLimitsService = Effect.fn("makeProviderLimitsService")(
     },
   );
 
+  const activeInstances = Effect.gen(function* () {
+    const ids = yield* registry.listInstances();
+    const infos = yield* Effect.forEach(ids, (id) =>
+      registry.getInstanceInfo(id).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    );
+    return infos.filter((info) => info !== undefined).filter((info) => info.enabled);
+  });
+
+  const markUnavailable = Effect.fn("ProviderLimitsService.markUnavailable")(function* (
+    provider: "claude" | "codex",
+    warning: string,
+  ) {
+    if (provider === "codex") yield* Ref.set(codexRawRef, undefined);
+    const capturedAt = DateTime.toEpochMillis(yield* DateTime.now);
+    yield* applySnapshot({
+      provider,
+      buckets: [],
+      capturedAt,
+      source: "read",
+      authState: "unavailable",
+      parseWarnings: [warning],
+    });
+  });
+  const ambiguousWarning =
+    "Multiple active instances of this provider are configured. Account-specific quota display is not supported yet; limits are hidden to avoid mixing accounts.";
+
   const handleRuntimeEvent = Effect.fn("ProviderLimitsService.handleRuntimeEvent")(function* (
     event: ProviderRuntimeEvent,
   ) {
     const provider = providerKey(event.provider);
     if (provider === undefined) return;
+    if (event.type !== "account.rate-limits.updated" && event.type !== "auth.status") return;
+    const instances = (yield* activeInstances).filter(
+      (info) => providerKey(info.driverKind) === provider,
+    );
+    if (instances.length > 1) {
+      yield* markUnavailable(provider, ambiguousWarning);
+      return;
+    }
+    if (
+      instances.length === 0 ||
+      (event.providerInstanceId !== undefined &&
+        event.providerInstanceId !== instances[0]?.instanceId)
+    )
+      return;
     if (event.type === "account.rate-limits.updated") {
       yield* normalizeProviderPayload(provider, event.payload.rateLimits, "event");
       return;
     }
     if (event.type === "auth.status" && event.payload.error !== undefined) {
+      if (provider === "codex") yield* Ref.set(codexRawRef, undefined);
       const capturedAt = DateTime.toEpochMillis(yield* DateTime.now);
       const snapshot: ProviderLimitsSnapshot = {
         provider,
@@ -631,26 +697,49 @@ export const makeProviderLimitsService = Effect.fn("makeProviderLimitsService")(
     Effect.forkScoped,
   );
 
-  const refresh = Effect.gen(function* () {
-    const instanceIds = yield* registry.listInstances();
+  const refreshOnce = Effect.gen(function* () {
+    const instances = yield* activeInstances;
     yield* Effect.forEach(
-      instanceIds,
-      (instanceId) =>
+      ["claude", "codex"] as const,
+      (provider) =>
         Effect.gen(function* () {
-          const info = yield* registry.getInstanceInfo(instanceId);
-          const provider = providerKey(info.driverKind);
-          if (provider === undefined) return;
-          const adapter = yield* registry.getByInstance(instanceId);
-          if (adapter.readProviderLimits === undefined) return;
-          const sessions = yield* adapter.listSessions();
-          const session = sessions.findLast((candidate) => candidate.status !== "closed");
-          const payload = yield* adapter.readProviderLimits(session?.threadId);
-          yield* normalizeProviderPayload(provider, payload, "read");
+          const matching = instances.filter((info) => providerKey(info.driverKind) === provider);
+          if (matching.length > 1) {
+            yield* markUnavailable(provider, ambiguousWarning);
+            return;
+          }
+          const instanceId = matching[0]?.instanceId;
+          if (instanceId === undefined) {
+            if ((yield* Ref.get(stateRef))[provider] !== undefined) {
+              yield* markUnavailable(
+                provider,
+                "No active instance of this provider is configured.",
+              );
+            }
+            return;
+          }
+          yield* Effect.gen(function* () {
+            const adapter = yield* registry.getByInstance(instanceId);
+            if (adapter.readProviderLimits === undefined) return;
+            const sessions = yield* adapter.listSessions();
+            const session = sessions.findLast((candidate) => candidate.status !== "closed");
+            const payload = yield* adapter
+              .readProviderLimits(session?.threadId)
+              .pipe(Effect.timeout("25 seconds"));
+            yield* normalizeProviderPayload(provider, payload, "read");
+          }).pipe(
+            Effect.catch(() =>
+              markUnavailable(
+                provider,
+                "Could not refresh subscription limits. Check provider connectivity and authentication.",
+              ),
+            ),
+          );
         }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Failed to refresh provider subscription limits.", {
               cause,
-              providerInstanceId: instanceId,
+              provider,
             }),
           ),
         ),
@@ -662,13 +751,14 @@ export const makeProviderLimitsService = Effect.fn("makeProviderLimitsService")(
   const updateActualRoute = (route: ProviderLimitsActualRoute) =>
     publishState((state) => ({ ...state, lastActualRoute: route }));
 
+  // Share an in-flight probe across clients and bound repeated process launches.
+  const refreshCached = yield* Effect.cachedWithTTL(refreshOnce, "5 seconds");
+  const refresh = refreshCached.pipe(Effect.andThen(Ref.get(stateRef)));
+
   return {
     latest: Ref.get(stateRef),
     changes: Stream.fromPubSub(changes),
-    subscribe: Effect.map(Ref.get(stateRef), (latest) => ({
-      latest,
-      changes: Stream.fromPubSub(changes),
-    })),
+    subscribe: subscribeBeforeSnapshotWithoutMutex(changes, Ref.get(stateRef)),
     refresh,
     updateActualRoute,
   } satisfies ProviderLimitsServiceShape;

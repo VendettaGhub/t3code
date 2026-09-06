@@ -1,22 +1,25 @@
-import type { ProviderLimitBucket, ProviderLimitsActualRoute, ProviderLimitsSnapshot } from "@t3tools/contracts";
+import type {
+  ProviderLimitBucket,
+  ProviderLimitsActualRoute,
+  ProviderLimitsSnapshot,
+} from "@t3tools/contracts";
 import { RefreshCwIcon } from "lucide-react";
 
 import { useAllProviderLimits } from "../../state/providerLimits";
 import { Button } from "../ui/button";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { groupProviderLimits, type ProviderLimitsAccountGroup } from "./ProviderLimitsPanel.logic";
+import {
+  formatProviderReset,
+  type ResetDisplayMode,
+  useProviderResetClock,
+  useProviderResetDisplayMode,
+} from "./providerResetDisplay";
 
 function maskAccountId(accountId: string): string {
   const at = accountId.indexOf("@");
   if (at <= 1) return accountId;
   return `${accountId[0]}***${accountId.slice(at)}`;
-}
-
-function formatReset(timestamp: number | undefined): string {
-  if (timestamp === undefined) return "Reset unknown";
-  return `Resets ${new Intl.DateTimeFormat(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(timestamp)}`;
 }
 
 function formatSpend(bucket: ProviderLimitBucket): string | null {
@@ -56,7 +59,12 @@ function ActualRoute({ route }: { readonly route: ProviderLimitsActualRoute }) {
   );
 }
 
-function BucketRows({ bucket }: { readonly bucket: ProviderLimitBucket }) {
+function BucketRows(props: {
+  readonly bucket: ProviderLimitBucket;
+  readonly resetDisplayMode: ResetDisplayMode;
+  readonly resetNow: number;
+}) {
+  const { bucket } = props;
   const windows = [bucket.primary, bucket.secondary].filter(
     (window): window is ProviderLimitBucket["primary"] => window !== undefined,
   );
@@ -68,7 +76,8 @@ function BucketRows({ bucket }: { readonly bucket: ProviderLimitBucket }) {
         <div key={`${window.label}-${index}`} className="space-y-1">
           <div className="flex justify-between gap-4 text-xs">
             <span className="truncate text-muted-foreground">
-              {window.label} · {formatReset(window.resetsAt)}
+              {window.label} ·{" "}
+              {formatProviderReset(window.resetsAt, props.resetDisplayMode, props.resetNow)}
             </span>
             <span className="shrink-0 tabular-nums">{Math.round(window.usedPercent)}% used</span>
           </div>
@@ -96,6 +105,8 @@ function ProviderCard(props: {
   readonly provider: "claude" | "codex";
   readonly snapshot: ProviderLimitsSnapshot | undefined;
   readonly accountLabel?: string;
+  readonly resetDisplayMode: ResetDisplayMode;
+  readonly resetNow: number;
 }) {
   return (
     <div className="rounded-lg border border-border/50 p-3">
@@ -113,7 +124,12 @@ function ProviderCard(props: {
       {props.snapshot?.buckets.length ? (
         <div className="space-y-3">
           {props.snapshot.buckets.map((bucket) => (
-            <BucketRows key={bucket.bucketId} bucket={bucket} />
+            <BucketRows
+              key={bucket.bucketId}
+              bucket={bucket}
+              resetDisplayMode={props.resetDisplayMode}
+              resetNow={props.resetNow}
+            />
           ))}
         </div>
       ) : (
@@ -132,6 +148,8 @@ function providerAccountCounts(accounts: readonly ProviderLimitsAccountGroup[]) 
 
 export function ProviderLimitsPanel() {
   const limits = useAllProviderLimits();
+  const [resetDisplayMode, setResetDisplayMode] = useProviderResetDisplayMode();
+  const resetNow = useProviderResetClock();
   const grouped = groupProviderLimits(limits.environments);
   const accountCounts = providerAccountCounts(grouped.accounts);
   return (
@@ -148,15 +166,29 @@ export function ProviderLimitsPanel() {
             Current provider limits; shared OAuth accounts are shown once.
           </p>
         </div>
-        <Button
-          type="button"
-          size="icon-sm"
-          variant="ghost"
-          onClick={limits.refresh}
-          aria-label="Refresh live subscription quota"
-        >
-          <RefreshCwIcon className="size-3.5" />
-        </Button>
+        <div className="flex items-center gap-2">
+          <ToggleGroup
+            aria-label="Reset time display"
+            variant="segmented"
+            value={[resetDisplayMode]}
+            onValueChange={(next) => {
+              const value = next[0];
+              if (value === "countdown" || value === "date") setResetDisplayMode(value);
+            }}
+          >
+            <Toggle value="countdown">Countdown</Toggle>
+            <Toggle value="date">Date</Toggle>
+          </ToggleGroup>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            onClick={limits.refresh}
+            aria-label="Refresh live subscription quota"
+          >
+            <RefreshCwIcon className="size-3.5" />
+          </Button>
+        </div>
       </div>
       {grouped.accounts.length > 0 ? (
         <div className="space-y-3">
@@ -166,6 +198,8 @@ export function ProviderLimitsPanel() {
                 key={account.key}
                 provider={account.provider}
                 snapshot={account.snapshot}
+                resetDisplayMode={resetDisplayMode}
+                resetNow={resetNow}
                 {...(accountCounts[account.provider] > 1 && account.accountId
                   ? { accountLabel: maskAccountId(account.accountId) }
                   : {})}
@@ -173,17 +207,17 @@ export function ProviderLimitsPanel() {
             ))}
           </div>
           {grouped.lastActualRoute ? <ActualRoute route={grouped.lastActualRoute} /> : null}
-          {grouped.errors.map((error) => (
-            <p key={error} className="text-xs text-destructive">
-              {error}
-            </p>
-          ))}
         </div>
       ) : grouped.isPending ? (
         <p className="text-xs text-muted-foreground">Loading live subscription quota…</p>
       ) : (
         <p className="text-xs text-muted-foreground">No live quota reported.</p>
       )}
+      {grouped.errors.map((error) => (
+        <p key={error} className="text-xs text-destructive">
+          {error}
+        </p>
+      ))}
     </section>
   );
 }

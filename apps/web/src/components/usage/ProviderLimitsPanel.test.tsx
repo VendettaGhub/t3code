@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const testState = vi.hoisted(() => ({
   limitsByEnvironment: new Map<string, ProviderLimitsState>(),
   accountIdsByEnvironment: new Map<string, { claude?: string; codex?: string }>(),
+  errorsByEnvironment: new Map<string, string>(),
   refresh: vi.fn(),
 }));
 
@@ -18,7 +19,7 @@ vi.mock("../../state/providerLimits", () => ({
       environmentId,
       label: environmentId,
       data,
-      error: null,
+      error: testState.errorsByEnvironment.get(environmentId) ?? null,
       isPending: false,
       accountIds: testState.accountIdsByEnvironment.get(environmentId) ?? {},
     })),
@@ -26,6 +27,7 @@ vi.mock("../../state/providerLimits", () => ({
   }),
 }));
 vi.mock("../ui/button", () => ({ Button: "button" }));
+vi.mock("../ui/toggle-group", () => ({ Toggle: "button", ToggleGroup: "div" }));
 
 import { ProviderLimitsPanel } from "./ProviderLimitsPanel";
 
@@ -49,6 +51,7 @@ beforeEach(() => {
   testState.refresh.mockReset();
   testState.limitsByEnvironment.clear();
   testState.accountIdsByEnvironment.clear();
+  testState.errorsByEnvironment.clear();
   testState.limitsByEnvironment.set(localEnvironmentId, {
     claude: snapshot("claude", {
       planType: "max",
@@ -100,6 +103,9 @@ describe("ProviderLimitsPanel", () => {
     expect(markup).not.toContain("environment-local");
     expect(markup).not.toContain("environment-remote");
     expect(markup).toContain('aria-label="Refresh live subscription quota"');
+    expect(markup).toContain('aria-label="Reset time display"');
+    expect(markup).toContain("Countdown");
+    expect(markup).toContain("Date");
     expect(markup).toContain("max");
     expect(markup).toContain("pro");
   });
@@ -169,5 +175,12 @@ describe("ProviderLimitsPanel", () => {
     const markup = renderToStaticMarkup(<ProviderLimitsPanel />);
 
     expect(markup).toContain("No live quota reported.");
+  });
+
+  it("explains request failures even when no account quota loaded", () => {
+    testState.limitsByEnvironment.clear();
+    testState.limitsByEnvironment.set(localEnvironmentId, {});
+    testState.errorsByEnvironment.set(localEnvironmentId, "Local quota request failed.");
+    expect(renderToStaticMarkup(<ProviderLimitsPanel />)).toContain("Local quota request failed.");
   });
 });

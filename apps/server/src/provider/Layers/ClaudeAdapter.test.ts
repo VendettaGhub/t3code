@@ -582,7 +582,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("preserves xhigh effort for Claude Fable 5", () => {
+  it.effect("preserves xhigh effort for Claude Fable 5.1", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -591,7 +591,7 @@ describe("ClaudeAdapterLive", () => {
         provider: ProviderDriverKind.make("claudeAgent"),
         modelSelection: createModelSelection(
           ProviderInstanceId.make("claudeAgent"),
-          "claude-fable-5",
+          "claude-fable-5-1",
           [{ id: "effort", value: "xhigh" }],
         ),
         runtimeMode: "full-access",

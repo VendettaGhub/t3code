@@ -21,8 +21,13 @@ vi.mock("../ui/button", () => ({ Button: "button" }));
 vi.mock("../ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => children,
   PopoverPopup: ({ children }: { children: ReactNode }) => children,
-  PopoverTrigger: ({ render, children }: { render: ReactElement; children: ReactNode }) =>
-    cloneElement(render, undefined, children),
+  PopoverTrigger: ({
+    render,
+    children,
+  }: {
+    render: ReactElement<{ children?: ReactNode }>;
+    children?: ReactNode;
+  }) => cloneElement(render, undefined, children ?? render.props.children),
 }));
 
 import { ProviderLimitChips } from "./ProviderLimitChips";
@@ -72,7 +77,7 @@ beforeEach(() => {
 });
 
 describe("ProviderLimitChips", () => {
-  it("includes the limiting window label in each compact headline", () => {
+  it("renders provider-grouped rings in their stable slot order", () => {
     const markup = renderToStaticMarkup(
       <ProviderLimitChips
         environmentId={EnvironmentId.make("environment-local")}
@@ -81,11 +86,22 @@ describe("ProviderLimitChips", () => {
     );
 
     expect(markup).toContain('data-provider-logo="claude"');
-    expect(markup).toContain("A 77%");
-    expect(markup).toContain("5h 58%");
+    expect(markup).toContain('aria-label="Claude 5-hour session, 45% used"');
+    expect(markup).toContain('aria-label="Claude weekly, 77% used"');
+    expect(markup).toContain('data-provider-logo="codex"');
+    expect(markup).toContain('aria-label="Codex 5-hour session, 58% used"');
+    expect(markup).toContain('aria-label="Codex weekly, 31% used"');
+    expect(markup).toContain("font-mono");
+    expect(markup).toContain("leading-none");
+    expect(markup.indexOf('aria-label="Claude 5-hour session')).toBeLessThan(
+      markup.indexOf('aria-label="Claude weekly'),
+    );
+    expect(markup.indexOf('aria-label="Codex 5-hour session')).toBeLessThan(
+      markup.indexOf('aria-label="Codex weekly'),
+    );
   });
 
-  it("keeps provider and window identity visible when the composer footer is compact", () => {
+  it("keeps full limit identity and percentages available to assistive technology", () => {
     const markup = renderToStaticMarkup(
       <ProviderLimitChips
         environmentId={EnvironmentId.make("environment-local")}
@@ -95,25 +111,22 @@ describe("ProviderLimitChips", () => {
     );
 
     expect(markup).toContain('data-provider-logo="claude"');
-    expect(markup).toContain("A 77%");
     expect(markup).toContain('data-provider-logo="codex"');
-    expect(markup).toContain("5h 58%");
-    expect(markup).toContain("Claude subscription limits");
-    expect(markup).toContain("Codex subscription limits");
+    expect(markup).toContain("45% used");
+    expect(markup).toContain("77% used");
+    expect(markup).toContain("58% used");
+    expect(markup).toContain("31% used");
   });
 
-  it("renders primary and secondary windows plus reported spend in the details", () => {
+  it("keeps extra usage out of the composer rings", () => {
     const markup = renderToStaticMarkup(
       <ProviderLimitChips
         environmentId={EnvironmentId.make("environment-local")}
         selectedModel="claude-fable-5"
       />,
     );
-
-    expect(markup).toContain('aria-label="Claude subscription 5h"');
-    expect(markup).toContain('aria-label="Claude subscription Week"');
-    expect(markup).toContain("Spend");
-    expect(markup).toContain("24.78");
-    expect(markup).toContain("200");
+    expect(markup).not.toContain(">A<");
+    expect(markup).not.toContain("Extra usage");
+    expect(markup).not.toContain("24.78");
   });
 });

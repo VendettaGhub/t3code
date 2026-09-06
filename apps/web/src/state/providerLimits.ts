@@ -5,7 +5,10 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import type { ProviderLimitsEnvironmentState, QuotaProvider } from "../components/usage/ProviderLimitsPanel.logic";
+import type {
+  ProviderLimitsEnvironmentState,
+  QuotaProvider,
+} from "../components/usage/ProviderLimitsPanel.logic";
 import { environmentPresentations } from "./presentation";
 import { createProviderLimitsAutoRefresh } from "./providerLimitsAutoRefresh";
 import { useEnvironmentQuery } from "./query";
@@ -51,7 +54,7 @@ function accountIdForProvider(
           candidate.auth.status === "authenticated" &&
           candidate.auth.email !== undefined,
       )
-      .map((candidate) => candidate.auth.email?.trim().toLocaleLowerCase())
+      .map((candidate) => candidate.auth.email?.trim().toLowerCase())
       .filter((email): email is string => Boolean(email)),
   );
   // A provider-level quota cannot be assigned safely if one environment exposes
@@ -69,8 +72,7 @@ const allProviderLimitsAtom = Atom.make((get): readonly ProviderLimitsEnvironmen
     const live = get(serverEnvironment.providerLimits(target));
     const initial = get(serverEnvironment.providerLimitsRefresh(target));
     const data =
-      Option.getOrNull(AsyncResult.value(live)) ??
-      Option.getOrNull(AsyncResult.value(initial));
+      Option.getOrNull(AsyncResult.value(live)) ?? Option.getOrNull(AsyncResult.value(initial));
     const config = get(serverEnvironment.configValueAtom(environmentId));
     const claudeAccountId = accountIdForProvider("claude", config);
     const codexAccountId = accountIdForProvider("codex", config);
@@ -95,7 +97,9 @@ const allProviderLimitsAtom = Atom.make((get): readonly ProviderLimitsEnvironmen
 
 export function useProviderLimits(environmentId: EnvironmentId | null) {
   const target = environmentId === null ? null : { environmentId, input: {} };
-  const live = useEnvironmentQuery(target === null ? null : serverEnvironment.providerLimits(target));
+  const live = useEnvironmentQuery(
+    target === null ? null : serverEnvironment.providerLimits(target),
+  );
   const initial = useEnvironmentQuery(
     target === null ? null : serverEnvironment.providerLimitsRefresh(target),
   );

@@ -20,6 +20,14 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("Windows close-to-tray preference", () => {
+  it("defaults on and preserves an explicit opt-out", () => {
+    expect(decodeClientSettings({}).closeToTray).toBe(true);
+    expect(decodeClientSettings({ closeToTray: false }).closeToTray).toBe(false);
+    expect(decodeClientSettingsPatch({ closeToTray: false })).toEqual({ closeToTray: false });
+  });
+});
+
 describe("ClaudeSettings auto-compaction", () => {
   it("uses Claude's default threshold when no override is configured", () => {
     expect(decodeClaudeSettings({}).autoCompactWindow).toBe("");

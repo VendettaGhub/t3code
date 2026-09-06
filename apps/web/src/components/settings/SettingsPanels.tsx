@@ -541,6 +541,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit
         ? ["Quit confirmation"]
         : []),
+      ...(settings.closeToTray !== DEFAULT_UNIFIED_SETTINGS.closeToTray ? ["Close to tray"] : []),
       ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
       ...getChangedBrowserSettingLabels(settings),
       ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
@@ -557,6 +558,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.appearanceContrast,
       settings.enableAgentBrowserAccess,
       settings.confirmQuit,
+      settings.closeToTray,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.confirmThreadUnpin,
@@ -676,6 +678,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
       confirmQuit: DEFAULT_UNIFIED_SETTINGS.confirmQuit,
+      closeToTray: DEFAULT_UNIFIED_SETTINGS.closeToTray,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       fontFamilySans: DEFAULT_UNIFIED_SETTINGS.fontFamilySans,
       fontFamilyComposer: DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer,
@@ -2402,6 +2405,30 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        {isElectron && /Win/i.test(navigator.platform) ? (
+          <SettingsRow
+            {...searchableSetting("close-to-tray")}
+            description="Keep sessions and remote connections running when you close the window. Use Quit T3 in the tray menu to exit completely."
+            resetAction={
+              settings.closeToTray !== DEFAULT_UNIFIED_SETTINGS.closeToTray ? (
+                <SettingResetButton
+                  label="close to tray"
+                  onClick={() =>
+                    updateSettings({ closeToTray: DEFAULT_UNIFIED_SETTINGS.closeToTray })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.closeToTray}
+                onCheckedChange={(checked) => updateSettings({ closeToTray: Boolean(checked) })}
+                aria-label="Keep running in system tray when closed"
+              />
+            }
+          />
+        ) : null}
 
         {isElectron ? (
           <SettingsRow

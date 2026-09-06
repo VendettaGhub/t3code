@@ -4,9 +4,27 @@ This directory preserves the fork-only parts of the local Claude/Codex hybrid se
 
 ## Contents
 
-- `t3-hybrid-picker-patch.cjs`: version-checked bundle patcher for Sol/Luna display aliases, model-specific effort/context settings, Qwen 131k/95k compaction, and subagent metadata.
+- `t3-hybrid-picker-patch.cjs`: version-checked bundle patcher for Astra/Sol/Luna display aliases, model-specific effort/context settings, Qwen 131k/95k compaction, and subagent metadata.
 - `claude-hybrid-router.cjs`: request router and fallback chain: Claude → Sol → Luna → Qwen.
 - Matching Node test files for both tools.
+- `t3-tray-stage.cjs`: stages the Windows close-to-tray setting and native tray without replacing unrelated installed patches. Run with the installed resources directory, a new output directory, the compiled desktop `main.cjs`, and the `@electron/asar` module path. Bundle anchors are deliberately version-specific; unknown builds fail closed. Keep the original `.asar.unpacked` directories beside the installed archives. The manifest contains before/after hashes; install only after tests, back up both archives, and restart T3. This tool never writes to the live installation itself.
+
+Hybrid Claude/Codex models default to a 272k context window with 240k compaction.
+The optional 900k selection compacts at 850k; Qwen retains its separate limits.
+Qwen generation (including fallback) requires a successful upstream token count.
+The router reserves 1,024 tokens within its 131,072-token context and caps output
+at the smaller of the remaining budget and 32,768 tokens (default 8,192 when omitted).
+This is a local safety policy, not a claim about a separate server output limit.
+Exhausted context returns an actionable error; conversation/tool data is never
+silently truncated. A failed count returns 503 without sending generation.
+These are client settings, not a guarantee of upstream capacity or subscription pricing.
+Astra is routed explicitly and does not silently fall back to another model.
+The patcher omits the permission callback only in bypass mode; other modes retain it.
+
+Bundle anchors are version-specific. Validate a candidate before installation; source tests
+do not prove that a running Windows or WSL installation has received the patch. WSL's
+shipped runtime archive and its integrity metadata must be handled by the host installer,
+not merely a disposable extracted runtime cache.
 
 ## Configuration
 
@@ -25,4 +43,5 @@ The machine-specific Windows/WSL launcher, service paths, credentials, installer
 ```powershell
 node --test scripts/custom-hybrid/t3-hybrid-picker-patch.test.cjs
 node --test scripts/custom-hybrid/claude-hybrid-router.test.cjs
+node --test scripts/custom-hybrid/qwen-budget.test.cjs
 ```

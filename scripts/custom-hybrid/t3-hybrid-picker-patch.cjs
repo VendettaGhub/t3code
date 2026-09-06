@@ -34,7 +34,7 @@ const DEFAULT_ASAR_CLI = path.join(
 );
 
 const PATCHED_NAMES = new Map([
-  ["claude-fable-5", "Claude Fable 5"],
+  ["claude-fable-5-1", "Claude Fable 5.1"],
   ["claude-opus-5", "Claude Opus 5"],
   ["claude-sonnet-5", "GPT-5.6 Sol"],
   ["claude-haiku-4-5", "GPT-5.6 Luna"],
@@ -45,9 +45,12 @@ const HYBRID_EXTENDED_CONTEXT_WINDOW = 1000000;
 const HYBRID_EXTENDED_AUTO_COMPACT_WINDOW = 900000;
 
 const EFFORT_POLICIES = new Map([
-  ["claude-fable-5", { values: ["low", "medium", "high"], defaultValue: "medium" }],
+  ["claude-fable-5-1", { values: ["low", "medium", "high"], defaultValue: "medium" }],
   ["claude-opus-5", { values: ["low", "medium", "high"], defaultValue: "medium" }],
-  ["claude-sonnet-5", { values: ["low", "medium", "high", "xhigh"], defaultValue: "high", fastMode: true }],
+  [
+    "claude-sonnet-5",
+    { values: ["low", "medium", "high", "xhigh"], defaultValue: "medium", fastMode: true },
+  ],
   ["claude-haiku-4-5", { values: ["xhigh", "max"], defaultValue: "xhigh", fastMode: true }],
 ]);
 
@@ -69,16 +72,25 @@ const QWEN_CONTEXT_ENVIRONMENT_MARKER = "/* t3-patch:qwen-context-environment */
 const SUBAGENT_PATCH_MARKER = "/* t3-patch:subagent-frontmatter-resolve */";
 const SUBAGENT_DISPLAY_ALIAS_MARKER = "/* t3-patch:subagent-model-display-aliases */";
 const USAGE_RATE_PRIORITY_MARKER = "/* t3-patch:canonical-usage-rate-priority */";
+const BYPASS_PERMISSION_BRIDGE_MARKER = "/* t3-patch:bypass-permissions-no-stdio-bridge */";
 
 function resolveSubagentDisplayConfig(input) {
-  const trimmed = (value) => typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const trimmed = (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
   const displayModel = (value) => {
     const model = trimmed(value);
     if (!model) return undefined;
-    if (model === "sonnet" || /^claude-sonnet-5(?:\[|$)/i.test(model) || /^(?:anthropic\/)?gpt-5\.6-sol(?:\[|$)/i.test(model)) {
+    if (
+      model === "sonnet" ||
+      /^claude-sonnet-5(?:\[|$)/i.test(model) ||
+      /^(?:anthropic\/)?gpt-5\.6-sol(?:\[|$)/i.test(model)
+    ) {
       return "gpt-5.6-sol";
     }
-    if (model === "haiku" || /^claude-haiku-4-5(?:\[|$)/i.test(model) || /^(?:anthropic\/)?gpt-5\.6-luna(?:\[|$)/i.test(model)) {
+    if (
+      model === "haiku" ||
+      /^claude-haiku-4-5(?:\[|$)/i.test(model) ||
+      /^(?:anthropic\/)?gpt-5\.6-luna(?:\[|$)/i.test(model)
+    ) {
       return "gpt-5.6-luna";
     }
     if (/^(?:anthropic\/)?gpt-5\.3-codex-spark(?:\[|$)/i.test(model)) return "gpt-5.3-codex-spark";
@@ -86,7 +98,8 @@ function resolveSubagentDisplayConfig(input) {
   };
   const launchModel = trimmed(input.launchInput?.model);
   const rawLaunchEffort = input.launchInput?.effort;
-  const launchEffort = trimmed(rawLaunchEffort) ??
+  const launchEffort =
+    trimmed(rawLaunchEffort) ??
     (typeof rawLaunchEffort === "number" && Number.isFinite(rawLaunchEffort)
       ? String(rawLaunchEffort)
       : undefined);
@@ -106,7 +119,8 @@ function resolveSubagentDisplayConfig(input) {
     const candidates = [];
     const projectDir = trimmed(input.projectDir);
     const homeDir = trimmed(input.homeDir);
-    if (projectDir) candidates.push(nodePath.join(projectDir, ".claude", "agents", `${subagentType}.md`));
+    if (projectDir)
+      candidates.push(nodePath.join(projectDir, ".claude", "agents", `${subagentType}.md`));
     if (homeDir) candidates.push(nodePath.join(homeDir, ".claude", "agents", `${subagentType}.md`));
     const file = candidates.find((candidate) => nodeFs.existsSync(candidate));
     if (!file) return fallback;
@@ -120,8 +134,10 @@ function resolveSubagentDisplayConfig(input) {
       const match = line.match(/^\s*(name|model|effort)\s*:\s*(.*?)\s*$/);
       if (!match) continue;
       let value = match[2].trim();
-      if ((value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))) {
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
         value = value.slice(1, -1).trim();
       }
       if (value) fields[match[1]] = value;
@@ -131,15 +147,18 @@ function resolveSubagentDisplayConfig(input) {
       haiku: "claude-haiku-4-5",
       sonnet: "claude-sonnet-5",
       opus: "claude-opus-5",
-      fable: "claude-fable-5",
+      fable: "claude-fable-5-1",
     };
     const configuredModel = trimmed(fields.model);
-    const model = displayModel(launchModel ??
-      (configuredModel && configuredModel !== "inherit"
-        ? aliases[configuredModel.toLowerCase()] ?? configuredModel
-        : sessionModel));
+    const model = displayModel(
+      launchModel ??
+        (configuredModel && configuredModel !== "inherit"
+          ? (aliases[configuredModel.toLowerCase()] ?? configuredModel)
+          : sessionModel),
+    );
     const configuredEffort = trimmed(fields.effort)?.toLowerCase();
-    const effort = launchEffort ??
+    const effort =
+      launchEffort ??
       (["low", "medium", "high", "xhigh", "max"].includes(configuredEffort)
         ? configuredEffort
         : sessionEffort);
@@ -230,8 +249,27 @@ function patchModelPolicy(bundle, slug) {
   );
 }
 
+function upgradeLegacyFableCatalogEntry(bundle) {
+  let upgraded = bundle;
+  if (
+    !upgraded.includes('\t\tslug: "claude-fable-5-1",') &&
+    upgraded.includes('\t\tslug: "claude-fable-5",')
+  ) {
+    upgraded = replaceModelBlock(upgraded, "claude-fable-5", (block) =>
+      block
+        .replace('slug: "claude-fable-5"', 'slug: "claude-fable-5-1"')
+        .replace('name: "Claude Fable 5"', 'name: "Claude Fable 5.1"'),
+    );
+  }
+  return upgraded.replace(
+    'const HYBRID_CONTEXT_MODELS = new Set(["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);',
+    'const HYBRID_CONTEXT_MODELS = new Set(["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);',
+  );
+}
+
 function patchEffortCarrierModelIds(bundle) {
-  const pattern = /function resolveClaudeApiModelId\(modelSelection\) \{[\s\S]*?\r?\n\}\r?\n(?=function toTitleCaseWords)/g;
+  const pattern =
+    /function resolveClaudeApiModelId\(modelSelection\) \{[\s\S]*?\r?\n\}\r?\n(?=function toTitleCaseWords)/g;
   const matches = bundle.match(pattern) || [];
   if (matches.length !== 1) {
     throw new Error(`Expected one resolveClaudeApiModelId function; found ${matches.length}.`);
@@ -239,7 +277,7 @@ function patchEffortCarrierModelIds(bundle) {
   const eol = matches[0].includes("\r\n") ? "\r\n" : "\n";
   const replacement = [
     "function resolveClaudeApiModelId(modelSelection) {",
-    '\tconst isHybridSlot = ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection.model);',
+    '\tconst isHybridSlot = ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection.model);',
     "\tconst supportsEffortCarrier = isHybridSlot || modelSelection.model === QWEN_MODEL_ID;",
     "\t// [1m] keeps extended context available; the picker controls per-session auto-compaction.",
     "\tlet baseModelId = isHybridSlot ? `${modelSelection.model}[1m]` : modelSelection.model;",
@@ -251,7 +289,7 @@ function patchEffortCarrierModelIds(bundle) {
     '\t\tconst rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");',
     "\t\tconst effort = resolveClaudeEffort(caps, rawEffort);",
     "\t\tif (effort) baseModelId = `${baseModelId}[effort=${effort}]`;",
-    "\t\tif ([\"claude-sonnet-5\", \"claude-haiku-4-5\"].includes(modelSelection.model) && getModelSelectionBooleanOptionValue(modelSelection, \"fastMode\") === true) {",
+    '\t\tif (["claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection.model) && getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true) {',
     "\t\t\tbaseModelId = `${baseModelId}[fast=true]`;",
     "\t\t}",
     "\t}",
@@ -269,7 +307,7 @@ function patchHybridContextWindows(bundle) {
       bundle,
       /function selectedClaudeContextWindow\(modelSelection\) \{\r?\n/g,
       [
-        'const HYBRID_CONTEXT_MODELS = new Set(["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);',
+        'const HYBRID_CONTEXT_MODELS = new Set(["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);',
         `const HYBRID_DEFAULT_CONTEXT_WINDOW = ${HYBRID_DEFAULT_CONTEXT_WINDOW};`,
         `const HYBRID_EXTENDED_CONTEXT_WINDOW = ${HYBRID_EXTENDED_CONTEXT_WINDOW};`,
         `const HYBRID_EXTENDED_AUTO_COMPACT_WINDOW = ${HYBRID_EXTENDED_AUTO_COMPACT_WINDOW};`,
@@ -291,100 +329,129 @@ function patchHybridContextWindows(bundle) {
   }
 
   const qwenSetting = `...modelSelection?.model === QWEN_MODEL_ID ? { autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW} } : {}`;
-  const legacyHybridSetting = '...HYBRID_CONTEXT_MODELS.has(modelSelection?.model) ? { autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_CONTEXT_WINDOW : HYBRID_DEFAULT_CONTEXT_WINDOW } : {}';
-  const hybridSetting = '...HYBRID_CONTEXT_MODELS.has(modelSelection?.model) ? { autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_AUTO_COMPACT_WINDOW : HYBRID_DEFAULT_CONTEXT_WINDOW } : {}';
+  const legacyHybridSetting =
+    '...HYBRID_CONTEXT_MODELS.has(modelSelection?.model) ? { autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_CONTEXT_WINDOW : HYBRID_DEFAULT_CONTEXT_WINDOW } : {}';
+  const hybridSetting =
+    '...HYBRID_CONTEXT_MODELS.has(modelSelection?.model) ? { autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_AUTO_COMPACT_WINDOW : HYBRID_DEFAULT_CONTEXT_WINDOW } : {}';
   bundle = bundle.replaceAll(legacyHybridSetting, hybridSetting);
   if (!bundle.includes(hybridSetting)) {
     const matches = bundle.split(qwenSetting).length - 1;
-    if (matches < 2) throw new Error(`Expected at least two Claude settings blocks; found ${matches}.`);
-    bundle = bundle.replaceAll(qwenSetting, `${qwenSetting},${bundle.includes("\r\n") ? "\r\n" : "\n"}\t\t\t${hybridSetting}`);
+    if (matches < 2)
+      throw new Error(`Expected at least two Claude settings blocks; found ${matches}.`);
+    bundle = bundle.replaceAll(
+      qwenSetting,
+      `${qwenSetting},${bundle.includes("\r\n") ? "\r\n" : "\n"}\t\t\t${hybridSetting}`,
+    );
   }
   return bundle;
 }
 
+function patchBypassPermissionsBridge(bundle) {
+  if (bundle.includes(BYPASS_PERMISSION_BRIDGE_MARKER)) return bundle;
+
+  const pattern =
+    /(includePartialMessages: true,\r?\n)([ \t]*)canUseTool,(\r?\n[ \t]*)(?=onUserDialog,|supportedDialogKinds:|env:)/g;
+  const matches = bundle.match(pattern) || [];
+  if (matches.length < 1) {
+    throw new Error("Expected at least one Claude query canUseTool bridge anchor.");
+  }
+  return bundle.replace(
+    pattern,
+    `$1$2${BYPASS_PERMISSION_BRIDGE_MARKER}$3$2...permissionMode === "bypassPermissions" ? {} : { canUseTool },$3`,
+  );
+}
+
 function patchQwenModel(bundle) {
-  const defaultCapabilities = 'const DEFAULT_CLAUDE_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });';
-  const eol = bundle.includes('\r\n') ? '\r\n' : '\n';
+  const defaultCapabilities =
+    "const DEFAULT_CLAUDE_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });";
+  const eol = bundle.includes("\r\n") ? "\r\n" : "\n";
   const legacyQwenCapabilities = [
-    'const QWEN_MODEL_CAPABILITIES = createModelCapabilities({',
-    '\toptionDescriptors: [buildSelectOptionDescriptor({',
+    "const QWEN_MODEL_CAPABILITIES = createModelCapabilities({",
+    "\toptionDescriptors: [buildSelectOptionDescriptor({",
     '\t\tid: "contextWindow",',
     '\t\tlabel: "Context Window",',
     '\t\toptions: [{ value: "131k", label: "131k", isDefault: true }]',
-    '\t})]',
-    '});',
+    "\t})]",
+    "});",
   ].join(eol);
   const qwenCapabilities = [
-    'const QWEN_MODEL_CAPABILITIES = createModelCapabilities({',
-    '\toptionDescriptors: [',
-    '\t\tbuildSelectOptionDescriptor({',
+    "const QWEN_MODEL_CAPABILITIES = createModelCapabilities({",
+    "\toptionDescriptors: [",
+    "\t\tbuildSelectOptionDescriptor({",
     '\t\t\tid: "effort",',
     '\t\t\tlabel: "Reasoning",',
-    '\t\t\toptions: [',
+    "\t\t\toptions: [",
     '\t\t\t\t{ value: "low", label: "Low" },',
     '\t\t\t\t{ value: "medium", label: "Medium" },',
     '\t\t\t\t{ value: "xhigh", label: "Extra High", isDefault: true }',
-    '\t\t\t]',
-    '\t\t}),',
-    '\t\tbuildSelectOptionDescriptor({',
+    "\t\t\t]",
+    "\t\t}),",
+    "\t\tbuildSelectOptionDescriptor({",
     '\t\t\tid: "contextWindow",',
     '\t\t\tlabel: "Context Window",',
     '\t\t\toptions: [{ value: "131k", label: "131k", isDefault: true }]',
-    '\t\t})',
-    '\t]',
-    '});',
+    "\t\t})",
+    "\t]",
+    "});",
   ].join(eol);
   if (!bundle.includes('const QWEN_MODEL_ID = "qwen3.8-27b";')) {
     const qwenSupport = [
       defaultCapabilities,
       `const QWEN_MODEL_ID = "${QWEN_MODEL_ID}";`,
       qwenCapabilities,
-      'function withQwenClaudeModel(models) {',
-      '\treturn models.map((model) => model.slug === QWEN_MODEL_ID ? {',
-      '\t\t...model,',
+      "function withQwenClaudeModel(models) {",
+      "\treturn models.map((model) => model.slug === QWEN_MODEL_ID ? {",
+      "\t\t...model,",
       `\t\tname: "${QWEN_MODEL_NAME}",`,
-      '\t\tcapabilities: QWEN_MODEL_CAPABILITIES',
-      '\t} : model);',
-      '}',
+      "\t\tcapabilities: QWEN_MODEL_CAPABILITIES",
+      "\t} : model);",
+      "}",
     ].join(eol);
     bundle = replaceExactlyOnce(
       bundle,
-      new RegExp(escapeRegExp(defaultCapabilities), 'g'),
+      new RegExp(escapeRegExp(defaultCapabilities), "g"),
       qwenSupport,
-      'default Claude capabilities declaration',
+      "default Claude capabilities declaration",
     );
   }
   bundle = bundle.replaceAll(legacyQwenCapabilities, qwenCapabilities);
 
-  if (!bundle.includes('if (slug === QWEN_MODEL_ID) return QWEN_MODEL_CAPABILITIES;')) {
+  if (!bundle.includes("if (slug === QWEN_MODEL_ID) return QWEN_MODEL_CAPABILITIES;")) {
     bundle = replaceExactlyOnce(
       bundle,
       /function getClaudeModelCapabilities\(model\) \{[\s\S]*?\r?\n\}\r?\n(?=(?:const allModels|function resolveClaudeEffort))/g,
       [
-        'function getClaudeModelCapabilities(model) {',
-        '\tconst slug = model?.trim();',
-        '\tif (slug === QWEN_MODEL_ID) return QWEN_MODEL_CAPABILITIES;',
-        '\treturn BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ?? DEFAULT_CLAUDE_MODEL_CAPABILITIES;',
-        '}',
-        '',
-      ].join(bundle.includes('\r\n') ? '\r\n' : '\n'),
-      'getClaudeModelCapabilities function',
+        "function getClaudeModelCapabilities(model) {",
+        "\tconst slug = model?.trim();",
+        "\tif (slug === QWEN_MODEL_ID) return QWEN_MODEL_CAPABILITIES;",
+        "\treturn BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ?? DEFAULT_CLAUDE_MODEL_CAPABILITIES;",
+        "}",
+        "",
+      ].join(bundle.includes("\r\n") ? "\r\n" : "\n"),
+      "getClaudeModelCapabilities function",
     );
   }
 
-  const customModelsPattern = /(?<!withQwenClaudeModel\()providerModelsFromSettings\(([^\r\n;]*DEFAULT_CLAUDE_MODEL_CAPABILITIES)\)/g;
-  bundle = bundle.replace(customModelsPattern, 'withQwenClaudeModel(providerModelsFromSettings($1))');
+  const customModelsPattern =
+    /(?<!withQwenClaudeModel\()providerModelsFromSettings\(([^\r\n;]*DEFAULT_CLAUDE_MODEL_CAPABILITIES)\)/g;
+  bundle = bundle.replace(
+    customModelsPattern,
+    "withQwenClaudeModel(providerModelsFromSettings($1))",
+  );
 
-  if (!bundle.includes('if (modelSelection?.model === QWEN_MODEL_ID) return 131072;')) {
+  if (!bundle.includes("if (modelSelection?.model === QWEN_MODEL_ID) return 131072;")) {
     bundle = replaceExactlyOnce(
       bundle,
       /function selectedClaudeContextWindow\(modelSelection\) \{\r?\n/g,
-      `function selectedClaudeContextWindow(modelSelection) {${bundle.includes('\r\n') ? '\r\n' : '\n'}\tif (modelSelection?.model === QWEN_MODEL_ID) return ${QWEN_CONTEXT_WINDOW};${bundle.includes('\r\n') ? '\r\n' : '\n'}`,
-      'selectedClaudeContextWindow function',
+      `function selectedClaudeContextWindow(modelSelection) {${bundle.includes("\r\n") ? "\r\n" : "\n"}\tif (modelSelection?.model === QWEN_MODEL_ID) return ${QWEN_CONTEXT_WINDOW};${bundle.includes("\r\n") ? "\r\n" : "\n"}`,
+      "selectedClaudeContextWindow function",
     );
   }
 
-  bundle = bundle.replaceAll('autoCompactWindow: 130000', `autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW}`);
+  bundle = bundle.replaceAll(
+    "autoCompactWindow: 130000",
+    `autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW}`,
+  );
   if (!bundle.includes(`autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW}`)) {
     const compactPattern = /\.\.\.ultracode \? \{ ultracode: true \} : \{\}/g;
     const matches = bundle.match(compactPattern) || [];
@@ -393,7 +460,7 @@ function patchQwenModel(bundle) {
     }
     bundle = bundle.replace(
       compactPattern,
-      `...ultracode ? { ultracode: true } : {},${bundle.includes('\r\n') ? '\r\n' : '\n'}\t\t\t...modelSelection?.model === QWEN_MODEL_ID ? { autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW} } : {}`,
+      `...ultracode ? { ultracode: true } : {},${bundle.includes("\r\n") ? "\r\n" : "\n"}\t\t\t...modelSelection?.model === QWEN_MODEL_ID ? { autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW} } : {}`,
     );
   }
   return bundle;
@@ -437,7 +504,8 @@ function patchSubagentMetadata(bundle) {
   const eol = bundle.includes("\r\n") ? "\r\n" : "\n";
   if (bundle.includes(SUBAGENT_PATCH_MARKER)) {
     if (bundle.includes(SUBAGENT_DISPLAY_ALIAS_MARKER)) return bundle;
-    const legacyHelperPattern = /\/\* t3-patch:subagent-frontmatter-resolve \*\/\r?\nfunction resolveSubagentDisplayConfig\(input\) \{[\s\S]*?\r?\n\}\r?\n(?=\r?\nconst DEFAULT_CLAUDE_MODEL_CAPABILITIES)/g;
+    const legacyHelperPattern =
+      /\/\* t3-patch:subagent-frontmatter-resolve \*\/\r?\nfunction resolveSubagentDisplayConfig\(input\) \{[\s\S]*?\r?\n\}\r?\n(?=\r?\nconst DEFAULT_CLAUDE_MODEL_CAPABILITIES)/g;
     return replaceExactlyOnce(
       bundle,
       legacyHelperPattern,
@@ -445,7 +513,8 @@ function patchSubagentMetadata(bundle) {
       "legacy subagent display helper",
     );
   }
-  const helperAnchor = /const DEFAULT_CLAUDE_MODEL_CAPABILITIES = createModelCapabilities\(\{ optionDescriptors: \[\] \}\);/g;
+  const helperAnchor =
+    /const DEFAULT_CLAUDE_MODEL_CAPABILITIES = createModelCapabilities\(\{ optionDescriptors: \[\] \}\);/g;
   bundle = replaceExactlyOnce(
     bundle,
     helperAnchor,
@@ -453,7 +522,8 @@ function patchSubagentMetadata(bundle) {
     "default Claude capabilities declaration for subagent helper",
   );
 
-  const launchMetadataPattern = /([\t ]*)const model = (bufferedModel \?\? )?trimmedString\(launchInput\?\.model\) \?\? trimmedString\(context\.session\.model \?\? void 0\);\r?\n\1const rawLaunchEffort = launchInput\?\.effort;\r?\n\1const effort = trimmedString\(rawLaunchEffort\) \?\? \(typeof rawLaunchEffort === "number" && Number\.isFinite\(rawLaunchEffort\) \? String\(rawLaunchEffort\) : context\.currentEffort\);/g;
+  const launchMetadataPattern =
+    /([\t ]*)const model = (bufferedModel \?\? )?trimmedString\(launchInput\?\.model\) \?\? trimmedString\(context\.session\.model \?\? void 0\);\r?\n\1const rawLaunchEffort = launchInput\?\.effort;\r?\n\1const effort = trimmedString\(rawLaunchEffort\) \?\? \(typeof rawLaunchEffort === "number" && Number\.isFinite\(rawLaunchEffort\) \? String\(rawLaunchEffort\) : context\.currentEffort\);/g;
   const matches = [...bundle.matchAll(launchMetadataPattern)];
   if (matches.length !== 1) {
     throw new Error(`Expected one Claude subagent launch metadata block; found ${matches.length}.`);
@@ -493,7 +563,8 @@ function patchUsageRatePriority(bundle) {
   }
   // Bundlers may suffix imported/local identifiers (for example finiteNumber$1).
   // Capture the helper and require the same identifier for both cache-rate fields.
-  const pattern = /\t\ttable\.set\(normalizeModelName\(name\), \{\r?\n\t\t\tinputCostPerToken: input,\r?\n\t\t\toutputCostPerToken: output,\r?\n\t\t\tcacheReadCostPerToken: ([A-Za-z_$][\w$]*)\(entry\.cache_read_input_token_cost\) \?\? input,\r?\n\t\t\tcacheCreationCostPerToken: \1\(entry\.cache_creation_input_token_cost\) \?\? input\r?\n\t\t\}\);/g;
+  const pattern =
+    /\t\ttable\.set\(normalizeModelName\(name\), \{\r?\n\t\t\tinputCostPerToken: input,\r?\n\t\t\toutputCostPerToken: output,\r?\n\t\t\tcacheReadCostPerToken: ([A-Za-z_$][\w$]*)\(entry\.cache_read_input_token_cost\) \?\? input,\r?\n\t\t\tcacheCreationCostPerToken: \1\(entry\.cache_creation_input_token_cost\) \?\? input\r?\n\t\t\}\);/g;
   const matches = [...bundle.matchAll(pattern)];
   if (matches.length !== 1) {
     throw new Error(`Expected one usage rate insertion block; found ${matches.length}.`);
@@ -526,15 +597,16 @@ function isPickerPatched(bundle) {
     if (!block) return false;
     const effortEnd = block.indexOf('id: "contextWindow"');
     const effortSection = effortEnd >= 0 ? block.slice(0, effortEnd) : block;
-    const values = [...effortSection.matchAll(/value: "(low|medium|high|xhigh|max|ultracode|ultrathink)"/g)].map(
-      (match) => match[1],
-    );
+    const values = [
+      ...effortSection.matchAll(/value: "(low|medium|high|xhigh|max|ultracode|ultrathink)"/g),
+    ].map((match) => match[1]);
     const defaultPattern = new RegExp(
       `value: "${escapeRegExp(policy.defaultValue)}", label: "[^"]+", isDefault: true`,
     );
-    const contextWindowMatches = /id: "contextWindow",[\s\S]*?value: "default",[\s\S]*?label: "260k",[\s\S]*?isDefault: true[\s\S]*?value: "1m",[\s\S]*?label: "1M"/.test(
-      block,
-    );
+    const contextWindowMatches =
+      /id: "contextWindow",[\s\S]*?value: "default",[\s\S]*?label: "(?:260|272)k",[\s\S]*?isDefault: true[\s\S]*?value: "1m",[\s\S]*?label: "1M"/.test(
+        block,
+      );
     const fastModeMatches = block.includes('id: "fastMode"') === Boolean(policy.fastMode);
     return (
       JSON.stringify(values) === JSON.stringify(policy.values) &&
@@ -543,36 +615,61 @@ function isPickerPatched(bundle) {
       fastModeMatches
     );
   });
-  const qwenCompactMatches = bundle.match(new RegExp(`autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW}`, "g")) || [];
+  const qwenCompactMatches =
+    bundle.match(new RegExp(`autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW}`, "g")) || [];
   const checks = {
     names: [...PATCHED_NAMES.values()].every((name) => bundle.includes(`name: "${name}"`)),
     policies: policiesMatch,
     compatibility: bundle.includes('model !== "claude-haiku-4-5"'),
-    effortCarrier: bundle.includes('baseModelId = `${baseModelId}[effort=${effort}]`;'),
-    fastCarrier: bundle.includes('baseModelId = `${baseModelId}[fast=true]`;'),
-    hybridSlots: bundle.includes('const isHybridSlot = ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection.model);'),
-    qwenEffortCarrier: bundle.includes('const supportsEffortCarrier = isHybridSlot || modelSelection.model === QWEN_MODEL_ID;'),
-    baseModel: bundle.includes('let baseModelId = isHybridSlot ? `${modelSelection.model}[1m]` : modelSelection.model;'),
-    contextCarrier: bundle.includes('resolveClaudeContextWindow(modelSelection) === "1m" && !isHybridSlot'),
-    contextModels: bundle.includes('const HYBRID_CONTEXT_MODELS = new Set(["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);'),
-    compactConstant: bundle.includes('const HYBRID_EXTENDED_AUTO_COMPACT_WINDOW = 900000;'),
-    contextLabels: bundle.includes('label: "260k"') && bundle.includes('{ value: "1m", label: "1M" }'),
-    compactSettings: (bundle.match(/HYBRID_CONTEXT_MODELS\.has\(modelSelection\?\.model\) \? \{ autoCompactWindow:/g) || []).length >= 2,
-    oldNamesGone: !bundle.includes('name: "Claude Sonnet 5"') && !bundle.includes('name: "Claude Haiku 4.5"'),
+    effortCarrier: bundle.includes("baseModelId = `${baseModelId}[effort=${effort}]`;"),
+    fastCarrier: bundle.includes("baseModelId = `${baseModelId}[fast=true]`;"),
+    hybridSlots: bundle.includes(
+      'const isHybridSlot = ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection.model);',
+    ),
+    qwenEffortCarrier: bundle.includes(
+      "const supportsEffortCarrier = isHybridSlot || modelSelection.model === QWEN_MODEL_ID;",
+    ),
+    baseModel: bundle.includes(
+      "let baseModelId = isHybridSlot ? `${modelSelection.model}[1m]` : modelSelection.model;",
+    ),
+    contextCarrier: bundle.includes(
+      'resolveClaudeContextWindow(modelSelection) === "1m" && !isHybridSlot',
+    ),
+    contextModels: bundle.includes(
+      'const HYBRID_CONTEXT_MODELS = new Set(["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);',
+    ),
+    compactConstant: bundle.includes("const HYBRID_EXTENDED_AUTO_COMPACT_WINDOW = 900000;"),
+    contextLabels:
+      /label: "(?:260|272)k"/.test(bundle) && bundle.includes('{ value: "1m", label: "1M" }'),
+    compactSettings:
+      (
+        bundle.match(
+          /HYBRID_CONTEXT_MODELS\.has\(modelSelection\?\.model\) \? \{ autoCompactWindow:/g,
+        ) || []
+      ).length >= 2,
+    oldNamesGone:
+      !bundle.includes('name: "Claude Sonnet 5"') && !bundle.includes('name: "Claude Haiku 4.5"'),
     qwenId: bundle.includes('const QWEN_MODEL_ID = "qwen3.8-27b";'),
     qwenName: bundle.includes('name: "Qwen 3.8 27B (VPN, 131k)"'),
-    qwenEfforts: bundle.includes('{ value: "low", label: "Low" }') && bundle.includes('{ value: "medium", label: "Medium" }') && bundle.includes('{ value: "xhigh", label: "Extra High", isDefault: true }'),
+    qwenEfforts:
+      bundle.includes('{ value: "low", label: "Low" }') &&
+      bundle.includes('{ value: "medium", label: "Medium" }') &&
+      bundle.includes('{ value: "xhigh", label: "Extra High", isDefault: true }'),
     qwenContext: bundle.includes('options: [{ value: "131k", label: "131k", isDefault: true }]'),
-    qwenCapabilities: bundle.includes('if (slug === QWEN_MODEL_ID) return QWEN_MODEL_CAPABILITIES;'),
-    qwenModels: bundle.includes('withQwenClaudeModel(providerModelsFromSettings('),
-    qwenWindow: bundle.includes('if (modelSelection?.model === QWEN_MODEL_ID) return 131072;'),
+    qwenCapabilities: bundle.includes(
+      "if (slug === QWEN_MODEL_ID) return QWEN_MODEL_CAPABILITIES;",
+    ),
+    qwenModels: bundle.includes("withQwenClaudeModel(providerModelsFromSettings("),
+    qwenWindow: bundle.includes("if (modelSelection?.model === QWEN_MODEL_ID) return 131072;"),
     qwenCompaction: qwenCompactMatches.length >= 2,
     qwenContextEnvironment:
       bundle.includes(QWEN_CONTEXT_ENVIRONMENT_MARKER) &&
       bundle.includes("function claudeEnvironmentForModel(modelSelection, baseEnvironment)") &&
       bundle.includes("env: claudeEnvironmentForModel(modelSelection, claudeEnvironment),"),
   };
-  isPickerPatched.failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+  isPickerPatched.failures = Object.entries(checks)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
   return isPickerPatched.failures.length === 0;
 }
 
@@ -587,20 +684,205 @@ function isSubagentMetadataPatched(bundle) {
   );
 }
 
+function patchAstraModel(bundle) {
+  if (bundle.includes("/* t3-patch:astra-272k-v1 */")) return bundle;
+  const eol = bundle.includes("\r\n") ? "\r\n" : "\n";
+  const insert = (anchor, addition) => {
+    bundle = replaceExactlyOnce(
+      bundle,
+      new RegExp(escapeRegExp(anchor), "g"),
+      `${anchor}${eol}${addition}`,
+      `Astra ${anchor}`,
+    );
+  };
+  insert(
+    "function withQwenClaudeModel(models) {",
+    [
+      "\t/* t3-patch:astra-272k-v1 */",
+      '\tif (!models.some((model) => model.slug === "gpt-6-astra")) models = [...models, { slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: true, capabilities: astraModelCapabilities() }];',
+    ].join(eol),
+  );
+  const helper = [
+    "function astraModelCapabilities() {",
+    "\treturn createModelCapabilities({ optionDescriptors: [",
+    '\t\tbuildSelectOptionDescriptor({ id: "effort", label: "Reasoning", options: [',
+    '\t\t\t{ value: "low", label: "Low" }, { value: "medium", label: "Medium", isDefault: true },',
+    '\t\t\t{ value: "high", label: "High" }, { value: "xhigh", label: "Extra High" }, { value: "max", label: "Max" }',
+    "\t\t] }),",
+    '\t\tbuildSelectOptionDescriptor({ id: "contextWindow", label: "Context Window", options: [{ value: "272k", label: "272k", isDefault: true }] })',
+    "\t] });",
+    "}",
+  ].join(eol);
+  insert(
+    "const DEFAULT_CLAUDE_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });",
+    helper,
+  );
+  insert(
+    "function getClaudeModelCapabilities(model) {",
+    '\tif (model?.trim() === "gpt-6-astra") return astraModelCapabilities();',
+  );
+  insert(
+    "function selectedClaudeContextWindow(modelSelection) {",
+    '\tif (modelSelection?.model === "gpt-6-astra") return 272000;',
+  );
+  insert(
+    "function resolveClaudeApiModelId(modelSelection) {",
+    [
+      '\tif (modelSelection.model === "gpt-6-astra") {',
+      '\t\tconst requested = getModelSelectionStringOptionValue(modelSelection, "effort");',
+      '\t\tconst effort = ["low", "medium", "high", "xhigh", "max"].includes(requested) ? requested : "medium";',
+      "\t\treturn `gpt-6-astra[effort=${effort}]`;",
+      "\t}",
+    ].join(eol),
+  );
+  insert(
+    "function claudeEnvironmentForModel(modelSelection, baseEnvironment) {",
+    '\tif (modelSelection?.model === "gpt-6-astra") return { ...baseEnvironment, CLAUDE_CODE_MAX_CONTEXT_TOKENS: "272000", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "240000" };',
+  );
+  const anchor = `...modelSelection?.model === QWEN_MODEL_ID ? { autoCompactWindow: ${QWEN_AUTO_COMPACT_WINDOW} } : {}`;
+  if (bundle.split(anchor).length - 1 < 2)
+    throw new Error("Missing Astra compaction settings anchors");
+  return bundle.replaceAll(
+    anchor,
+    `${anchor},${eol}\t\t\t...modelSelection?.model === "gpt-6-astra" ? { autoCompactWindow: 240000 } : {}`,
+  );
+}
+
+function patchAlignedContextDefaults(bundle) {
+  const marker = "/* t3-patch:aligned-context-272k */";
+  if (bundle.includes(marker)) return bundle;
+  bundle = replaceExactlyOnce(
+    bundle,
+    /const HYBRID_DEFAULT_CONTEXT_WINDOW = 260000;/g,
+    "const HYBRID_DEFAULT_CONTEXT_WINDOW = 272000;",
+    "hybrid standard context",
+  );
+  bundle = bundle.replaceAll(
+    '{ value: "default", label: "260k", isDefault: true }',
+    '{ value: "default", label: "272k", isDefault: true }',
+  );
+  const settings =
+    'autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_AUTO_COMPACT_WINDOW : HYBRID_DEFAULT_CONTEXT_WINDOW';
+  if (bundle.split(settings).length - 1 < 2) throw new Error("Missing hybrid compaction anchors");
+  bundle = bundle.replaceAll(
+    settings,
+    'autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_AUTO_COMPACT_WINDOW : 240000',
+  );
+  const anchor = "function claudeEnvironmentForModel(modelSelection, baseEnvironment) {";
+  const eol = bundle.includes("\r\n") ? "\r\n" : "\n";
+  return replaceExactlyOnce(
+    bundle,
+    new RegExp(escapeRegExp(anchor), "g"),
+    [
+      anchor,
+      `\t${marker}`,
+      '\tif (["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection?.model)) {',
+      '\t\tconst extended = resolveClaudeContextWindow(modelSelection) === "1m";',
+      '\t\treturn { ...baseEnvironment, CLAUDE_CODE_MAX_CONTEXT_TOKENS: extended ? "1000000" : "272000", CLAUDE_CODE_AUTO_COMPACT_WINDOW: extended ? "900000" : "240000" };',
+      "\t}",
+    ].join(eol),
+    "hybrid per-model environment",
+  );
+}
+
+function patch900kOption(bundle) {
+  const marker = "/* t3-patch:hybrid-900k-option */";
+  if (bundle.includes(marker)) return bundle;
+  const eol = bundle.includes("\r\n") ? "\r\n" : "\n";
+  const option = '{ value: "900k", label: "900k (higher usage)" }';
+  bundle = bundle.replaceAll(
+    '{ value: "default", label: "272k", isDefault: true },',
+    `{ value: "default", label: "272k", isDefault: true }, ${option},`,
+  );
+  bundle = replaceExactlyOnce(
+    bundle,
+    /options: \[\{ value: "272k", label: "272k", isDefault: true \}\]/g,
+    `options: [{ value: "272k", label: "272k", isDefault: true }, ${option}]`,
+    "Astra 900k option",
+  );
+  const helper = [
+    marker,
+    "function isHybrid900k(modelSelection) {",
+    '\treturn ["gpt-6-astra", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"].includes(modelSelection?.model) && getModelSelectionStringOptionValue(modelSelection, "contextWindow") === "900k";',
+    "}",
+  ].join(eol);
+  const contextAnchor = "function selectedClaudeContextWindow(modelSelection) {";
+  bundle = replaceExactlyOnce(
+    bundle,
+    new RegExp(escapeRegExp(contextAnchor), "g"),
+    `${helper}${eol}${contextAnchor}${eol}\tif (isHybrid900k(modelSelection)) return 900000;`,
+    "900k runtime context",
+  );
+  const envAnchor = "function claudeEnvironmentForModel(modelSelection, baseEnvironment) {";
+  bundle = replaceExactlyOnce(
+    bundle,
+    new RegExp(escapeRegExp(envAnchor), "g"),
+    `${envAnchor}${eol}\tif (isHybrid900k(modelSelection)) return { ...baseEnvironment, CLAUDE_CODE_MAX_CONTEXT_TOKENS: "900000", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "850000" };`,
+    "900k process context",
+  );
+  const settings =
+    '...HYBRID_CONTEXT_MODELS.has(modelSelection?.model) ? { autoCompactWindow: resolveClaudeContextWindow(modelSelection) === "1m" ? HYBRID_EXTENDED_AUTO_COMPACT_WINDOW : 240000 } : {}';
+  if (bundle.split(settings).length - 1 < 2) throw new Error("Missing 900k settings anchors");
+  return bundle.replaceAll(
+    settings,
+    `${settings},${eol}\t\t\t...isHybrid900k(modelSelection) ? { autoCompactWindow: 850000 } : {}`,
+  );
+}
+
+function patchAstraServiceTier(bundle) {
+  const marker = "/* t3-patch:astra-service-tier-v1 */";
+  if (bundle.includes(marker)) return bundle;
+  const eol = bundle.includes("\r\n") ? "\r\n" : "\n";
+  const anchor = `function astraModelCapabilities() {${eol}\treturn createModelCapabilities({ optionDescriptors: [`;
+  bundle = replaceExactlyOnce(
+    bundle,
+    new RegExp(escapeRegExp(anchor), "g"),
+    `${anchor}${eol}\t\t${marker}${eol}\t\tbuildSelectOptionDescriptor({ id: "serviceTier", label: "Service Tier", options: [{ value: "default", label: "Standard", isDefault: true }, { value: "priority", label: "Priority (higher usage)" }] }),`,
+    "Astra service tier descriptor",
+  );
+  return replaceExactlyOnce(
+    bundle,
+    /return `gpt-6-astra\[effort=\$\{effort\}\]`;/g,
+    'return `gpt-6-astra[effort=${effort}]${getModelSelectionStringOptionValue(modelSelection, "serviceTier") === "priority" ? "[fast=true]" : ""}`;',
+    "Astra service tier carrier",
+  );
+}
+
 function isPatched(bundle) {
   return (
     isPickerPatched(bundle) &&
     isSubagentMetadataPatched(bundle) &&
-    bundle.includes(USAGE_RATE_PRIORITY_MARKER)
+    bundle.includes(USAGE_RATE_PRIORITY_MARKER) &&
+    bundle.includes(BYPASS_PERMISSION_BRIDGE_MARKER) &&
+    bundle.includes("/* t3-patch:astra-272k-v1 */") &&
+    bundle.includes("/* t3-patch:aligned-context-272k */") &&
+    bundle.includes("/* t3-patch:hybrid-900k-option */") &&
+    bundle.includes("/* t3-patch:astra-service-tier-v1 */")
   );
 }
 
 function patchBundle(input) {
-  if (isPatched(input)) {
+  let upgradedInput = upgradeLegacyFableCatalogEntry(input);
+  // Update only the effort default on completed patches: rebuilding the base
+  // catalog would discard later Astra/900k additions whose markers still exist.
+  if (upgradedInput.includes("/* t3-patch:astra-272k-v1 */")) {
+    upgradedInput = replaceModelBlock(upgradedInput, "claude-sonnet-5", (block) =>
+      block
+        .replace(
+          '{ value: "high", label: "High", isDefault: true }',
+          '{ value: "high", label: "High" }',
+        )
+        .replace(
+          '{ value: "medium", label: "Medium" }',
+          '{ value: "medium", label: "Medium", isDefault: true }',
+        ),
+    );
+  }
+  if (upgradedInput === input && isPatched(input)) {
     return { status: "already-patched", bundle: input };
   }
 
-  let bundle = input;
+  let bundle = upgradedInput;
   if (!isPickerPatched(bundle)) {
     for (const slug of PATCHED_NAMES.keys()) bundle = patchModelPolicy(bundle, slug);
 
@@ -617,11 +899,18 @@ function patchBundle(input) {
     bundle = patchQwenContextEnvironment(bundle);
     bundle = patchHybridContextWindows(bundle);
   }
+  bundle = patchBypassPermissionsBridge(bundle);
   bundle = patchSubagentMetadata(bundle);
   bundle = patchUsageRatePriority(bundle);
+  bundle = patchAstraModel(bundle);
+  bundle = patchAlignedContextDefaults(bundle);
+  bundle = patch900kOption(bundle);
+  bundle = patchAstraServiceTier(bundle);
 
   if (!isPatched(bundle)) {
-    throw new Error(`Picker patch verification failed (picker=${isPickerPatched(bundle)}:${isPickerPatched.failures.join(",")}, subagent=${isSubagentMetadataPatched(bundle)}, usage=${bundle.includes(USAGE_RATE_PRIORITY_MARKER)}).`);
+    throw new Error(
+      `Picker patch verification failed (picker=${isPickerPatched(bundle)}:${isPickerPatched.failures.join(",")}, bypass=${bundle.includes(BYPASS_PERMISSION_BRIDGE_MARKER)}, subagent=${isSubagentMetadataPatched(bundle)}, usage=${bundle.includes(USAGE_RATE_PRIORITY_MARKER)}).`,
+    );
   }
   return { status: "patched", bundle };
 }
@@ -751,13 +1040,16 @@ function replacePackedArchiveEntry(archive, entry, replacement, output, asarCli)
   const dataStart = 8 + raw.headerSize;
   const packedStart = dataStart + Number(oldOffset);
   const suffixStart = packedStart + Number(oldSize);
-  fs.writeFileSync(output, Buffer.concat([
-    sizeBuffer,
-    headerBuffer,
-    original.subarray(dataStart, packedStart),
-    replacement,
-    original.subarray(suffixStart),
-  ]));
+  fs.writeFileSync(
+    output,
+    Buffer.concat([
+      sizeBuffer,
+      headerBuffer,
+      original.subarray(dataStart, packedStart),
+      replacement,
+      original.subarray(suffixStart),
+    ]),
+  );
 
   asar.uncache(output);
   const verified = asar.extractFile(output, entry);
@@ -784,7 +1076,8 @@ function patchAsarTarget(target, backupDirectory, asarCli = DEFAULT_ASAR_CLI) {
       return { status: result.status, file: archive, sha256: beforeHash };
     }
 
-    const backups = backupDirectory || path.join(os.homedir(), ".t3", "backups", "t3-hybrid-picker");
+    const backups =
+      backupDirectory || path.join(os.homedir(), ".t3", "backups", "t3-hybrid-picker");
     fs.mkdirSync(backups, { recursive: true });
     backup = path.join(backups, `server.asar.${beforeHash.slice(0, 16)}.bak`);
     if (!fs.existsSync(backup)) fs.copyFileSync(archive, backup);
@@ -825,9 +1118,12 @@ function patchAsarTarget(target, backupDirectory, asarCli = DEFAULT_ASAR_CLI) {
 }
 
 function checkTarget(target, asarCli = DEFAULT_ASAR_CLI) {
-  const bundle = target.kind === "asar"
-    ? loadAsarSupport(asarCli).asar.extractFile(target.archive, target.entry || DEFAULT_SERVER_ENTRY).toString("utf8")
-    : fs.readFileSync(target.file, "utf8");
+  const bundle =
+    target.kind === "asar"
+      ? loadAsarSupport(asarCli)
+          .asar.extractFile(target.archive, target.entry || DEFAULT_SERVER_ENTRY)
+          .toString("utf8")
+      : fs.readFileSync(target.file, "utf8");
   const patched = isPatched(bundle);
   return {
     status: patched ? "already-patched" : "patch-required",
@@ -844,9 +1140,8 @@ if (require.main === module) {
   const backupIndex = args.indexOf("--backup-dir");
   const backupDir = backupIndex >= 0 ? args[backupIndex + 1] : undefined;
   try {
-    const target = fileIndex >= 0
-      ? { kind: "file", file: args[fileIndex + 1] }
-      : resolveDefaultTarget();
+    const target =
+      fileIndex >= 0 ? { kind: "file", file: args[fileIndex + 1] } : resolveDefaultTarget();
     const result = args.includes("--check")
       ? checkTarget(target)
       : target.kind === "asar"
