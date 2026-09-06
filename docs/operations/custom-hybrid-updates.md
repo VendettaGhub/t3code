@@ -165,13 +165,21 @@ so the retained stage can be identified without guessing among old stages:
 New-Item -ItemType Directory -Force "<temp-root>" | Out-Null
 $env:TEMP = (Resolve-Path "<temp-root>").Path
 $env:TMP = $env:TEMP
-pnpm run dist:desktop:artifact -- `
+$repo = (Resolve-Path "<update-worktree>").Path
+$env:PATH = (Join-Path $repo "node_modules\.bin") + [IO.Path]::PathSeparator + $env:PATH
+node (Join-Path $repo "scripts\build-desktop-artifact.ts") `
   --platform win --target nsis --arch x64 `
   --build-version 0.0.38 `
   --output-dir "<artifact-output>" `
   --keep-stage --skip-build `
   --wsl-prebuild "<prep-root>/native-inputs/wsl-prebuild/linux-x64/pty.node"
 ```
+
+On Windows, invoke the builder directly with an **absolute** repository bin path
+first in this process's PATH. A package-manager wrapper can prepend a relative
+`node_modules/.bin`; resolving `vp` there and then changing into the temporary
+stage makes the command point at a nonexistent file. This process-local setup
+does not change the user's persisted PATH or the live application's shell.
 
 Use `--skip-build` only because `pnpm run build:desktop` already completed for
 the same source checkout. `--keep-stage` leaves a directory named

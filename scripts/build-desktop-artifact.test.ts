@@ -244,6 +244,32 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it.effect("unpacks native files when the build stage has a hidden parent", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const sourceDir = path.join(root, ".hidden", "server");
+        const nativeDir = path.join(sourceDir, "node_modules", "native");
+        yield* fs.makeDirectory(nativeDir, { recursive: true });
+        const names = ["addon.node", "lib.dll", "helper.exe", "lib.so", "lib.so.1", "lib.dylib"];
+        for (const name of [...names, "index.js"]) {
+          yield* fs.writeFileString(path.join(nativeDir, name), "fixture");
+        }
+        const asarPath = path.join(root, "server.asar");
+        yield* packWindowsServerAsar({ sourceDir, asarPath, arch: "x64" });
+        for (const name of names) {
+          assert.isTrue(
+            yield* fs.exists(path.join(`${asarPath}.unpacked`, "node_modules", "native", name)),
+          );
+        }
+        assert.isFalse(
+          yield* fs.exists(path.join(`${asarPath}.unpacked`, "node_modules", "native", "index.js")),
+        );
+      }),
+    ),
+  );
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
@@ -625,10 +651,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       // Native binaries and helper executables cannot load from inside an
       // asar; everything else stays packed. The Claude SDK platform packages
       // and .bin shims never ship.
-      assert.equal(
-        WINDOWS_SERVER_ASAR_UNPACK_GLOB,
-        "{**/*.node,**/*.dll,**/*.exe,**/*.so,**/*.so.*,**/*.dylib}",
-      );
+      assert.equal(WINDOWS_SERVER_ASAR_UNPACK_GLOB, "*.{node,dll,exe,so,so.*,dylib}");
       assert.deepStrictEqual(WINDOWS_SERVER_ASAR_IGNORE_GLOBS, [
         "**/node_modules/@anthropic-ai/claude-agent-sdk-*",
         "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",

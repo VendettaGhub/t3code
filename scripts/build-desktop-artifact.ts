@@ -823,8 +823,8 @@ export const WINDOWS_SERVER_ASAR_RESOURCE = "server.asar";
 // dlopen/spawn need real files, so native modules, shared libraries, and
 // helper executables live in the server.asar.unpacked sibling (the standard
 // asar redirect convention). Everything else stays packed.
-export const WINDOWS_SERVER_ASAR_UNPACK_GLOB =
-  "{**/*.node,**/*.dll,**/*.exe,**/*.so,**/*.so.*,**/*.dylib}";
+// ASAR matches basenames; a **/ prefix would exclude hidden staging parents.
+export const WINDOWS_SERVER_ASAR_UNPACK_GLOB = "*.{node,dll,exe,so,so.*,dylib}";
 // Mirrors DESKTOP_FILE_EXCLUSIONS for the hand-packed sidecar: the Claude SDK
 // platform packages are dead weight (see above), and node_modules/.bin shims
 // are never spawned at runtime (and are symlinks on POSIX build hosts, which
