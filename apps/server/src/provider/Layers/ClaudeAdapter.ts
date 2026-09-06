@@ -14,6 +14,7 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type SDKMessage,
+  type SDKControlGetUsageResponse,
   type SDKResultMessage,
   type SettingSource,
   type SDKUserMessage,
@@ -79,6 +80,11 @@ import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { resolveClaudeConfigDirPath } from "../Drivers/ClaudeSkills.ts";
+import {
+  normalizeHybridSubagentModel,
+  resolveHybridSubagentMetadata,
+} from "../HybridSubagentMetadata.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
@@ -91,6 +97,12 @@ import {
   resolveClaudeModelSlug,
   scopeClaudeModelCatalog,
 } from "../ClaudeModelCatalog.ts";
+import { buildClaudeCapabilitiesProbeQueryOptions } from "./ClaudeProvider.ts";
+import {
+  isHybridModelEnvironment,
+  resolveHybridQueryPolicy,
+  withHybridModelCatalog,
+} from "../HybridModelPolicy.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -325,6 +337,8 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<SDKControlGetUsageResponse>;
+  readonly initializationResult?: () => Promise<unknown>;
   readonly close: () => void;
 }
 
@@ -338,6 +352,10 @@ export interface ClaudeAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
+  readonly readProviderLimitsWithoutSession?: () => Effect.Effect<
+    SDKControlGetUsageResponse,
+    ProviderAdapterError
+  >;
 }
 
 function isUuid(value: string): boolean {
@@ -1679,7 +1697,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("claudeAgent");
   const modelCatalogEffect = (
     options?.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
-  ).pipe(Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)));
+  ).pipe(
+    Effect.map((catalog) =>
+      scopeClaudeModelCatalog(
+        isHybridModelEnvironment(options?.environment ?? process.env)
+          ? withHybridModelCatalog(catalog)
+          : catalog,
+        claudeSettings.customModels,
+      ),
+    ),
+  );
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
@@ -2881,7 +2908,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // The snapshot's message.model is the authoritative API model the
       // subagent actually ran on — refine the seeded launch-time value.
       const owningTaskId = agentIdForParentToolUse(context.taskAgents, assistantParentToolUseId);
-      const snapshotModel = trimmedString(message.message.model);
+      const snapshotModel = (yield* modelCatalogEffect).hybrid
+        ? normalizeHybridSubagentModel(message.message.model)
+        : trimmedString(message.message.model);
       const owningAgent = owningTaskId ? context.taskAgents.get(owningTaskId) : undefined;
       if (snapshotModel) {
         if (owningAgent) {
@@ -3234,16 +3263,33 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (toolUseId) {
           context.pendingTaskModels.delete(toolUseId);
         }
-        const model =
-          bufferedModel ??
-          trimmedString(launchInput?.model) ??
-          trimmedString(context.session.model ?? undefined);
-        const rawLaunchEffort = launchInput?.effort;
-        const effort =
-          trimmedString(rawLaunchEffort) ??
-          (typeof rawLaunchEffort === "number" && Number.isFinite(rawLaunchEffort)
-            ? String(rawLaunchEffort)
-            : context.currentEffort);
+        const nativeMetadata = {
+          model: bufferedModel ?? trimmedString(launchInput?.model) ?? context.session.model,
+          effort:
+            trimmedString(launchInput?.effort) ??
+            (typeof launchInput?.effort === "number" && Number.isFinite(launchInput.effort)
+              ? String(launchInput.effort)
+              : context.currentEffort),
+        };
+        const { model, effort } = (yield* modelCatalogEffect).hybrid
+          ? yield* resolveHybridSubagentMetadata({
+              subagentType: message.subagent_type,
+              projectDir: context.session.cwd,
+              configDir: yield* resolveClaudeConfigDirPath(
+                claudeSettings,
+                claudeEnvironment,
+                context.session.cwd,
+              ).pipe(Effect.provideService(Path.Path, path)),
+              bufferedModel,
+              launchModel: launchInput?.model,
+              launchEffort: launchInput?.effort,
+              parentModel: context.session.model,
+              parentEffort: context.currentEffort,
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            )
+          : nativeMetadata;
         // Remember the agent identity so every later task.* payload for this
         // taskId is self-describing (identity must survive activity retention).
         context.taskAgents.set(message.task_id, {
@@ -4283,6 +4329,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "full-access": "bypassPermissions",
       };
       const permissionMode = runtimeModeToPermission[input.runtimeMode];
+      const hybridPolicy =
+        modelCatalog.hybrid && modelSelection
+          ? resolveHybridQueryPolicy(modelSelection)
+          : undefined;
       const settings = {
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
@@ -4290,6 +4340,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(claudeSettings.autoCompactWindow
           ? { autoCompactWindow: Number(claudeSettings.autoCompactWindow) }
           : {}),
+        ...(hybridPolicy ? { autoCompactWindow: hybridPolicy.autoCompactWindow } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
       // The attachments dir grant lets the agent Read/copy pasted images at
@@ -4324,7 +4375,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         canUseTool,
         onUserDialog,
         supportedDialogKinds: ["resume_return"],
-        env: claudeEnvironment,
+        env: hybridPolicy
+          ? {
+              ...claudeEnvironment,
+              CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(hybridPolicy.contextWindow),
+              CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(hybridPolicy.autoCompactWindow),
+            }
+          : claudeEnvironment,
         additionalDirectories,
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         ...(mcpSession
@@ -4696,6 +4753,74 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const listSessions: ClaudeAdapterShape["listSessions"] = () =>
     Effect.sync(() => Array.from(sessions.values(), ({ session }) => ({ ...session })));
 
+  const readProviderLimits: NonNullable<ClaudeAdapterShape["readProviderLimits"]> = (threadId) =>
+    Effect.gen(function* () {
+      const context =
+        threadId === undefined
+          ? Array.from(sessions.values()).findLast((candidate) => !candidate.stopped)
+          : sessions.get(threadId);
+      if (!context || context.stopped) {
+        if (threadId !== undefined) {
+          return yield* new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId,
+          });
+        }
+        if (options?.readProviderLimitsWithoutSession !== undefined) {
+          return yield* options.readProviderLimitsWithoutSession();
+        }
+        const abort = new AbortController();
+        let standaloneQuery: ClaudeQueryRuntime | undefined;
+        return yield* Effect.tryPromise({
+          try: async () => {
+            standaloneQuery = createQuery({
+              // Never yield: initialize local Claude IPC without sending a prompt.
+              // oxlint-disable-next-line require-yield
+              prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+                await new Promise<void>((resolve) => {
+                  if (abort.signal.aborted) return resolve();
+                  abort.signal.addEventListener("abort", () => resolve(), { once: true });
+                });
+              })(),
+              options: buildClaudeCapabilitiesProbeQueryOptions({
+                executablePath: claudeSdkExecutablePath,
+                abortController: abort,
+                environment: claudeEnvironment,
+                cwd: serverConfig.cwd,
+              }),
+            });
+            await standaloneQuery.initializationResult?.();
+            const readUsage =
+              standaloneQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+            if (readUsage === undefined) {
+              throw new Error("The embedded Claude SDK does not expose live plan usage.");
+            }
+            return await readUsage.call(standaloneQuery);
+          },
+          catch: (cause) => toRequestError(ThreadId.make("provider-limits"), "usage/get", cause),
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (!abort.signal.aborted) abort.abort();
+              standaloneQuery?.close();
+            }),
+          ),
+        );
+      }
+      const readUsage = context.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+      if (readUsage === undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "usage/get",
+          detail: "The embedded Claude SDK does not expose live plan usage.",
+        });
+      }
+      return yield* Effect.tryPromise({
+        try: () => readUsage.call(context.query),
+        catch: (cause) => toRequestError(context.session.threadId, "usage/get", cause),
+      });
+    });
+
   const hasSession: ClaudeAdapterShape["hasSession"] = (threadId) =>
     Effect.sync(() => {
       const context = sessions.get(threadId);
@@ -4744,6 +4869,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     respondToUserInput,
     stopSession,
     listSessions,
+    readProviderLimits,
     hasSession,
     stopAll,
     get streamEvents() {

@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Path from "effect/Path";
 import { describe, it, assert } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1217,18 +1218,16 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
+            const persisted = yield* registry.streamChanges.pipe(
+              Stream.filter((providers) =>
+                providers.some((provider) => provider.checkedAt === refreshedProvider.checkedAt),
+              ),
+              Stream.runHead,
+              Effect.forkChild({ startImmediately: true }),
+            );
             yield* PubSub.publish(changes, refreshedProvider);
-
-            let cachedProvider = yield* readProviderStatusCache(filePath);
-            for (
-              let attempt = 0;
-              attempt < 50 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
-              attempt += 1
-            ) {
-              yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
-              cachedProvider = yield* readProviderStatusCache(filePath);
-            }
+            yield* Fiber.join(persisted);
+            const cachedProvider = yield* readProviderStatusCache(filePath);
 
             assert.deepStrictEqual(cachedProvider, {
               ...refreshedProvider,
@@ -1342,31 +1341,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 instanceId: openCodeInstanceId,
               });
 
+              const persisted = yield* registry.streamChanges.pipe(
+                Stream.filter((providers) =>
+                  providers.some(
+                    (provider) => provider.checkedAt === authoritativeProvider.checkedAt,
+                  ),
+                ),
+                Stream.runHead,
+                Effect.forkChild({ startImmediately: true }),
+              );
               yield* PubSub.publish(changes, authoritativeProvider);
-
+              yield* Fiber.join(persisted);
               let cachedProvider = yield* readProviderStatusCache(filePath);
-              for (
-                let attempt = 0;
-                attempt < 50 && cachedProvider?.checkedAt !== authoritativeProvider.checkedAt;
-                attempt += 1
-              ) {
-                yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
-                cachedProvider = yield* readProviderStatusCache(filePath);
-              }
 
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
 
+              const failedPersisted = yield* registry.streamChanges.pipe(
+                Stream.filter((providers) =>
+                  providers.some((provider) => provider.checkedAt === failedProvider.checkedAt),
+                ),
+                Stream.runHead,
+                Effect.forkChild({ startImmediately: true }),
+              );
               yield* PubSub.publish(changes, failedProvider);
-              for (
-                let attempt = 0;
-                attempt < 50 && cachedProvider?.checkedAt !== failedProvider.checkedAt;
-                attempt += 1
-              ) {
-                yield* TestClock.adjust("10 millis");
-                yield* Effect.yieldNow;
-                cachedProvider = yield* readProviderStatusCache(filePath);
-              }
+              yield* Fiber.join(failedPersisted);
+              cachedProvider = yield* readProviderStatusCache(filePath);
 
               assert.deepStrictEqual(cachedProvider?.models, [authoritativeProvider.models[0]!]);
               assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
@@ -1790,31 +1789,25 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // instanceRegistry.streamChanges, () => syncLiveSources)`
             // fires `syncLiveSources`, which subscribes and launches a fresh
             // background refresh on the rebuilt instance.
+            const reprobed = yield* registry.streamChanges.pipe(
+              Stream.filter(
+                (providers) =>
+                  spawnedCommands.includes(secondMissing) &&
+                  providers.some(
+                    (provider) => provider.instanceId === "codex" && provider.status === "error",
+                  ),
+              ),
+              Stream.runHead,
+              Effect.forkChild({ startImmediately: true }),
+            );
             yield* serverSettings.updateSettings({
               providers: {
                 codex: { enabled: true, binaryPath: secondMissing },
               },
             });
 
-            // Poll until the injected process boundary observes the new
-            // executable. This verifies the public settings-to-probe behavior
-            // without depending on timestamps assigned by TestClock.
-            const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
-                const providers = yield* registry.getProviders;
-                const codex = providers.find((provider) => provider.instanceId === "codex");
-                if (
-                  codex !== undefined &&
-                  codex.status === "error" &&
-                  spawnedCommands.includes(secondMissing)
-                ) {
-                  return providers;
-                }
-                yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
-              }
-              return yield* registry.getProviders;
-            });
+            yield* Fiber.join(reprobed);
+            const refreshed = yield* registry.getProviders;
 
             const reprobedCodex = refreshed.find((provider) => provider.instanceId === "codex");
             assert.deepStrictEqual(spawnedCommands, [firstMissing, secondMissing]);
@@ -2149,7 +2142,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
       );
 
       it.effect("runs Claude status probes with the configured CLAUDE_CONFIG_DIR", () => {
-        const claudeConfigDir = "/tmp/t3code-claude-home";
+        const claudeConfigDirEffect = Effect.map(Path.Path, (path) =>
+          path.resolve("/tmp/t3code-claude-home"),
+        );
         const recorded = recordingMockSpawnerLayer((args) => {
           const joined = args.join(" ");
           if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
@@ -2163,6 +2158,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         });
 
         return Effect.gen(function* () {
+          const claudeConfigDir = yield* claudeConfigDirEffect;
           const status = yield* checkClaudeProviderStatus(
             {
               ...defaultClaudeSettings,

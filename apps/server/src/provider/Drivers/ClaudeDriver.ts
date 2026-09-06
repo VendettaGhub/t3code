@@ -36,6 +36,7 @@ import {
 } from "../Layers/ClaudeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { resolveClaudeModelCatalog } from "../ClaudeModelCatalog.ts";
+import { isHybridModelEnvironment } from "../HybridModelPolicy.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
@@ -129,8 +130,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
-      const modelCatalog = modelManifest.current.pipe(Effect.map(resolveClaudeModelCatalog));
       const processEnv = mergeProviderInstanceEnvironment(environment);
+      const hybrid = isHybridModelEnvironment(processEnv);
+      const modelCatalog = modelManifest.current.pipe(
+        Effect.map((manifest) => resolveClaudeModelCatalog(manifest, hybrid)),
+      );
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -184,7 +188,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                 () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
                 processEnv,
                 cwd,
-                resolveClaudeModelCatalog(manifest),
+                resolveClaudeModelCatalog(manifest, hybrid),
               ),
             ),
             Effect.map(stampIdentity),
@@ -204,7 +208,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         initialSnapshot: (settings) =>
           modelManifest.current.pipe(
             Effect.flatMap((manifest) =>
-              makePendingClaudeProvider(settings.provider, resolveClaudeModelCatalog(manifest)),
+              makePendingClaudeProvider(
+                settings.provider,
+                resolveClaudeModelCatalog(manifest, hybrid),
+              ),
             ),
             Effect.map(stampIdentity),
           ),

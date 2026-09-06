@@ -43,6 +43,8 @@ import {
   SYNTHETIC_CLAUDE_THINKING_MODEL,
 } from "../ClaudeModelCatalog.testFixtures.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
+import { BUNDLED_CLAUDE_MODEL_CATALOG } from "../ClaudeModelCatalog.ts";
+import { withHybridModelCatalog } from "../HybridModelPolicy.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -64,6 +66,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public usageCalls = 0;
   public closeCalls = 0;
   public closeError: unknown | undefined;
 
@@ -111,6 +114,24 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = async () => {
+    this.usageCalls += 1;
+    return {
+      session: {
+        total_cost_usd: 0,
+        total_api_duration_ms: 0,
+        total_duration_ms: 0,
+        total_lines_added: 0,
+        total_lines_removed: 0,
+        model_usage: {},
+      },
+      subscription_type: "max",
+      rate_limits_available: true,
+      rate_limits: { five_hour: { utilization: 31, resets_at: null } },
+      behaviors: null,
+    };
   };
 
   readonly close = (): void => {
@@ -162,6 +183,7 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly modelCatalog?: ClaudeAdapterLiveOptions["modelCatalog"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -173,7 +195,7 @@ function makeHarness(config?: {
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
     ...(config?.instanceId ? { instanceId: config.instanceId } : {}),
-    modelCatalog: Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
+    modelCatalog: config?.modelCatalog ?? Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     createQuery: (input) => {
       createInput = input;
       return query;
@@ -276,6 +298,44 @@ const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 const SYNTHETIC_SUBAGENT_MODEL = "claude-synthetic-subagent[expanded]";
 
 describe("ClaudeAdapterLive", () => {
+  it.effect("reads Claude plan limits without an active Claude thread", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      assert.ok(adapter.readProviderLimits);
+      const response = yield* adapter.readProviderLimits();
+      assert.equal(typeof response, "object");
+      assert.equal(harness.query.usageCalls, 1);
+      assert.equal(harness.query.closeCalls, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("reads Claude plan limits through the SDK on-demand usage API", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.ok(adapter.readProviderLimits);
+      const response = yield* adapter.readProviderLimits();
+      assert.equal(typeof response, "object");
+      const value = response as {
+        readonly subscription_type?: unknown;
+        readonly rate_limits?: { readonly five_hour?: { readonly utilization?: unknown } };
+      };
+      assert.equal(value.subscription_type, "max");
+      assert.equal(value.rate_limits?.five_hour?.utilization, 31);
+      assert.equal(harness.query.usageCalls, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -358,6 +418,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(createInput?.options.settingSources, ["user", "project", "local"]);
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
+      assert.equal(typeof createInput?.options.canUseTool, "function");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -440,6 +501,40 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  for (const [model, context, tokens, compact] of [
+    ["qwen3.8-27b", "131k", 131072, 95000],
+    ["gpt-6-astra", "272k", 272000, 240000],
+    ["gpt-6-astra", "900k", 900000, 850000],
+    ["claude-sonnet-5", "default", 272000, 240000],
+    ["claude-fable-5-1", "1m", 1000000, 900000],
+  ] as const) {
+    it.effect(`applies hybrid ${model} ${context} limits to the actual SDK query`, () => {
+      const harness = makeHarness({
+        claudeConfig: { autoCompactWindow: "300000" },
+        modelCatalog: Effect.succeed(withHybridModelCatalog(BUNDLED_CLAUDE_MODEL_CATALOG)),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), model, [
+            { id: "contextWindow", value: context },
+          ]),
+        });
+        const options = harness.getLastCreateQueryInput()?.options;
+        assert.equal(options?.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS, String(tokens));
+        assert.equal(options?.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, String(compact));
+        assert.deepEqual(options?.settings, { autoCompactWindow: compact });
+        assert.equal(typeof options?.canUseTool, "function");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
 
   it.effect("forwards claude effort levels into query options", () => {
     const harness = makeHarness();

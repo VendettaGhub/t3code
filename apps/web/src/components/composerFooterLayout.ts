@@ -1,5 +1,6 @@
-export const COMPOSER_FOOTER_COMPACT_BREAKPOINT_PX = 620;
-export const COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX = 780;
+// The two live-provider quota chips add roughly 180 px to the expanded footer.
+export const COMPOSER_FOOTER_COMPACT_BREAKPOINT_PX = 800;
+export const COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX = 960;
 
 export function shouldUseCompactComposerFooter(
   width: number | null,

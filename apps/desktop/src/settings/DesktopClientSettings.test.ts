@@ -20,6 +20,7 @@ const clientSettings: ClientSettings = {
   browserRecordingFrameRate: 60,
   browserAutoShowFloatingPreview: false,
   confirmQuit: "double-click",
+  closeToTray: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   confirmThreadUnpin: false,

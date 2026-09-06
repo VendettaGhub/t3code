@@ -35,6 +35,8 @@ import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRe
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
+import { ProviderLimitsServiceLive } from "./provider/Services/ProviderLimitsService.ts";
+import { HybridRouteAuditServiceLive } from "./provider/Layers/HybridRouteAuditService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -274,8 +276,14 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
 // NDJSON writers and is provided at the outer runtime layer so both
 // `ProviderService` and the per-instance drivers read the same logger pair.
 const ProviderLayerLive = ProviderServiceLive.pipe(
-  Layer.provide(ProviderAdapterRegistryLive),
+  Layer.provideMerge(ProviderAdapterRegistryLive),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+);
+const ProviderLimitsLayerLive = ProviderLimitsServiceLive.pipe(
+  Layer.provideMerge(ProviderLayerLive),
+);
+const HybridRouteAuditLayerLive = HybridRouteAuditServiceLive.pipe(
+  Layer.provide(ProviderLimitsLayerLive),
 );
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
@@ -390,7 +398,8 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 );
 
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
-  Layer.provideMerge(ProviderLayerLive),
+  Layer.provideMerge(ProviderLimitsLayerLive),
+  Layer.provideMerge(HybridRouteAuditLayerLive),
   Layer.provideMerge(OrchestrationLayerLive),
 );
 

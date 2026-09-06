@@ -108,6 +108,12 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     Promise.resolve({ threadId: "provider-thread-1" }),
   );
 
+  public readonly readProviderLimitsImpl = vi.fn(() =>
+    Promise.resolve({
+      rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300 } },
+    }),
+  );
+
   public readonly respondToRequestImpl = vi.fn(
     (_requestId: ApprovalRequestId, _decision: ProviderApprovalDecision): Promise<void> =>
       Promise.resolve(undefined),
@@ -149,6 +155,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   uploadFeedback(reason?: string) {
     return Effect.promise(() => this.uploadFeedbackImpl(reason));
   }
+
+  readProviderLimits = Effect.promise(() => this.readProviderLimitsImpl());
 
   respondToRequest(requestId: ApprovalRequestId, decision: ProviderApprovalDecision) {
     return Effect.promise(() => this.respondToRequestImpl(requestId, decision));
@@ -300,6 +308,44 @@ validationLayer("CodexAdapterLive validation", (it) => {
 });
 
 const sessionRuntimeFactory = makeRuntimeFactory();
+const standaloneLimitsRead = vi.fn(() =>
+  Effect.succeed({
+    rateLimits: { primary: { usedPercent: 41, windowDurationMins: 300 } },
+  }),
+);
+const standaloneLimitsLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: sessionRuntimeFactory.factory,
+        readProviderLimitsWithoutSession: standaloneLimitsRead,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+standaloneLimitsLayer("CodexAdapterLive standalone limits", (it) => {
+  it.effect("reads subscription limits without an active Codex thread", () =>
+    Effect.gen(function* () {
+      standaloneLimitsRead.mockClear();
+      const adapter = yield* CodexAdapter;
+      NodeAssert.ok(adapter.readProviderLimits);
+      const response = yield* adapter.readProviderLimits();
+      NodeAssert.deepStrictEqual(response, {
+        rateLimits: { primary: { usedPercent: 41, windowDurationMins: 300 } },
+      });
+      NodeAssert.equal(standaloneLimitsRead.mock.calls.length, 1);
+    }),
+  );
+});
+
 const sessionErrorLayer = it.layer(
   Layer.effect(
     CodexAdapter,
@@ -318,6 +364,23 @@ const sessionErrorLayer = it.layer(
 );
 
 sessionErrorLayer("CodexAdapterLive session errors", (it) => {
+  it.effect("reads subscription limits from an active Codex app-server session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-limits"),
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.ok(adapter.readProviderLimits);
+      const response = yield* adapter.readProviderLimits();
+      NodeAssert.deepStrictEqual(response, {
+        rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300 } },
+      });
+    }),
+  );
+
   it.effect("maps missing adapter sessions to ProviderAdapterSessionNotFoundError", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

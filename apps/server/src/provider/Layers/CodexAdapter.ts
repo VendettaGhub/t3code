@@ -65,6 +65,7 @@ import {
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { readCodexProviderLimits } from "./CodexProvider.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -86,6 +87,11 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly readProviderLimitsWithoutSession?: () => Effect.Effect<
+    EffectCodexSchema.V2GetAccountRateLimitsResponse,
+    CodexErrors.CodexAppServerError,
+    Scope.Scope
+  >;
 }
 
 interface CodexAdapterSessionContext {
@@ -1929,6 +1935,57 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const readProviderLimits: NonNullable<CodexAdapterShape["readProviderLimits"]> = (threadId) =>
+    Effect.gen(function* () {
+      const session =
+        threadId === undefined
+          ? Array.from(sessions.values()).findLast((candidate) => !candidate.stopped)
+          : sessions.get(threadId);
+      if (!session || session.stopped) {
+        if (threadId !== undefined) {
+          return yield* new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId,
+          });
+        }
+        const readWithoutSession =
+          options?.readProviderLimitsWithoutSession ??
+          (() =>
+            readCodexProviderLimits({
+              binaryPath: codexConfig.binaryPath,
+              ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+              launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+              cwd: serverConfig.cwd,
+              ...(options?.environment ? { environment: options.environment } : {}),
+            }).pipe(
+              Effect.mapError((cause) =>
+                CodexErrors.CodexAppServerRequestError.internalError(
+                  cause instanceof Error ? cause.message : String(cause),
+                  cause,
+                  { method: "account/rateLimits/read" },
+                ),
+              ),
+            ));
+        return yield* Effect.scoped(readWithoutSession()).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "account/rateLimits/read",
+                detail: cause instanceof Error ? cause.message : String(cause),
+                cause,
+              }),
+          ),
+        );
+      }
+      return yield* session.runtime.readProviderLimits.pipe(
+        Effect.mapError((cause) =>
+          mapCodexRuntimeError(session.threadId, "account/rateLimits/read", cause),
+        ),
+      );
+    });
+
   const respondToRequest: CodexAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.respondToRequest(requestId, decision)),
@@ -2017,6 +2074,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     readThread,
     rollbackThread,
     uploadFeedback,
+    readProviderLimits,
     respondToRequest,
     respondToUserInput,
     stopSession,

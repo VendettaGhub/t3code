@@ -170,6 +170,11 @@ export const UsagePricing = Schema.Struct({
 export type UsagePricing = typeof UsagePricing.Type;
 
 export const UsageSummaryInput = Schema.Struct({
+  /**
+   * Highest response contract the client can decode. Clients predating v5 do
+   * not send this field and receive the v4 Claude/Codex-only wire shape.
+   */
+  usageContractVersion: Schema.optional(NonNegativeInt),
   /** Inclusive first day of the window, in `timeZone`. */
   sinceDay: UsageDay,
   /** Inclusive last day of the window, in `timeZone`. */

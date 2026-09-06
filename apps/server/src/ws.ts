@@ -125,6 +125,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as ProviderLimits from "./provider/Services/ProviderLimitsService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
@@ -553,6 +554,7 @@ const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const usage = yield* UsageService.UsageService;
+      const providerLimits = yield* ProviderLimits.ProviderLimitsService;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1754,6 +1756,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverGetUsageSummary, usage.readSummary(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverRefreshProviderLimits]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverRefreshProviderLimits, providerLimits.refresh, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRetryResourceTelemetry, resourceTelemetry.retry, {
             "rpc.aggregate": "server",
@@ -2499,6 +2505,16 @@ const makeWsRpcLayer = (
             WS_METHODS.subscribeResourceTelemetry,
             Stream.unwrap(
               Effect.map(resourceTelemetry.subscribe, ({ latest, changes }) =>
+                Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.subscribeProviderLimits]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeProviderLimits,
+            Stream.unwrap(
+              Effect.map(providerLimits.subscribe, ({ latest, changes }) =>
                 Stream.concat(Stream.make(latest), changes),
               ),
             ),

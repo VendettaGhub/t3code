@@ -244,6 +244,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "close-to-tray",
+    title: "Desktop: keep running in system tray when closed",
+    to: "/settings/general",
+    desktopOnly: true,
+    windowsOnly: true,
+  },
+  {
     id: "text-generation-model",
     title: "Text generation model",
     to: "/settings/general",

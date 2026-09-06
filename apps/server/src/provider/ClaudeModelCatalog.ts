@@ -24,6 +24,7 @@ import {
   type ModelManifestData,
   resolveProviderCatalog,
 } from "./ModelManifest.ts";
+import { resolveHybridQueryPolicy, withHybridModelCatalog } from "./HybridModelPolicy.ts";
 
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
 const EMPTY_CAPABILITIES: ModelCapabilities = { optionDescriptors: [] };
@@ -36,6 +37,7 @@ export interface ClaudeCatalogModel {
 
 export interface ClaudeModelCatalog {
   readonly models: ReadonlyArray<ClaudeCatalogModel>;
+  readonly hybrid?: boolean;
 }
 
 function tryResolveClaudeModelCatalog(manifest: ModelManifestData): ClaudeModelCatalog | null {
@@ -59,13 +61,15 @@ function tryResolveClaudeModelCatalog(manifest: ModelManifestData): ClaudeModelC
   };
 }
 
-export function resolveClaudeModelCatalog(manifest: ModelManifestData): ClaudeModelCatalog {
-  return (
-    tryResolveClaudeModelCatalog(manifest) ??
+export function resolveClaudeModelCatalog(
+  manifest: ModelManifestData,
+  hybrid = false,
+): ClaudeModelCatalog {
+  const catalog = tryResolveClaudeModelCatalog(manifest) ??
     tryResolveClaudeModelCatalog(BUNDLED_MODEL_MANIFEST) ?? {
       models: [],
-    }
-  );
+    };
+  return hybrid ? withHybridModelCatalog(catalog) : catalog;
 }
 
 export const BUNDLED_CLAUDE_MODEL_CATALOG = resolveClaudeModelCatalog(BUNDLED_MODEL_MANIFEST);
@@ -84,6 +88,7 @@ export function scopeClaudeModelCatalog(
   if (customAliases.size === 0) return catalog;
 
   return {
+    ...catalog,
     models: catalog.models.map((entry) => {
       if (!entry.model.aliases?.some((alias) => customAliases.has(alias.toLowerCase()))) {
         return entry;
@@ -217,6 +222,10 @@ export function resolveClaudeCatalogApiModelId(
 ): string {
   const entry = resolveClaudeCatalogModel(catalog, modelSelection.model);
   const slug = entry?.model.slug ?? modelSelection.model;
+  const hybrid = catalog.hybrid
+    ? resolveHybridQueryPolicy({ ...modelSelection, model: slug })
+    : undefined;
+  if (hybrid?.apiModelId) return hybrid.apiModelId;
   const descriptors = getProviderOptionDescriptors({
     caps: entry?.model.capabilities ?? EMPTY_CAPABILITIES,
     selections: modelSelection.options,
