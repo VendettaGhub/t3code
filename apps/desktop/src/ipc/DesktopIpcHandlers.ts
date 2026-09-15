@@ -42,6 +42,7 @@ import {
   showContextMenu,
 } from "./methods/window.ts";
 import * as PreviewIpc from "./methods/preview.ts";
+import { getWindowsTrayState, setWindowsTrayEnabled } from "./methods/windowsTray.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
@@ -77,6 +78,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setWslBackendEnabled);
   yield* ipc.handle(setWslDistro);
   yield* ipc.handle(setWslOnly);
+
+  yield* ipc.handle(getWindowsTrayState);
+  yield* ipc.handle(setWindowsTrayEnabled);
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(pickThemeFiles);

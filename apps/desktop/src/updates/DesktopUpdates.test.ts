@@ -162,6 +162,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
         setServerExposureMode: () => Effect.die("unexpected server exposure update"),
         setTailscaleServe: () => Effect.die("unexpected Tailscale Serve update"),
         setUpdateChannel: () => Effect.fail(setUpdateChannelError),
+        setWindowsTrayEnabled: () => Effect.die("unexpected Windows tray toggle"),
         setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),
         setWslDistro: () => Effect.die("unexpected WSL distro change"),
         setWslOnly: () => Effect.die("unexpected WSL-only toggle"),

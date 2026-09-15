@@ -30,6 +30,7 @@ const DesktopSettingsPatch = Schema.Struct({
   tailscaleServePort: Schema.optionalKey(Schema.Number),
   updateChannel: Schema.optionalKey(Schema.Literals(["latest", "nightly"])),
   updateChannelConfiguredByUser: Schema.optionalKey(Schema.Boolean),
+  windowsTrayEnabled: Schema.optionalKey(Schema.Boolean),
   wslBackendEnabled: Schema.optionalKey(Schema.Boolean),
   wslMode: Schema.optionalKey(Schema.Literals(["local", "wsl"])),
   wslDistro: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -113,6 +114,7 @@ describe("DesktopSettings", () => {
         tailscaleServePort: 443,
         updateChannel: "nightly",
         updateChannelConfiguredByUser: false,
+        windowsTrayEnabled: false,
         wslBackendEnabled: false,
         wslOnly: false,
         wslDistro: null,
@@ -142,6 +144,7 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 8443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: true,
+          windowsTrayEnabled: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -249,6 +252,7 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 8443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: false,
+          windowsTrayEnabled: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -305,6 +309,7 @@ describe("DesktopSettings", () => {
             tailscaleServePort: 8443,
             updateChannel: "nightly",
             updateChannelConfiguredByUser: true,
+            windowsTrayEnabled: false,
             wslBackendEnabled: false,
             wslOnly: false,
             wslDistro: null,
@@ -353,6 +358,7 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 443,
           updateChannel: "nightly",
           updateChannelConfiguredByUser: false,
+          windowsTrayEnabled: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -381,6 +387,7 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: true,
+          windowsTrayEnabled: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -408,10 +415,33 @@ describe("DesktopSettings", () => {
           tailscaleServePort: 443,
           updateChannel: "latest",
           updateChannelConfiguredByUser: false,
+          windowsTrayEnabled: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
         } satisfies DesktopAppSettings.DesktopSettings);
+      }),
+    ),
+  );
+
+  it.effect("persists the Windows tray preference", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+
+        const enabled = yield* settings.setWindowsTrayEnabled(true);
+        assert.isTrue(enabled.changed);
+        assert.equal(enabled.settings.windowsTrayEnabled, true);
+
+        const persisted = yield* decodeDesktopSettingsPatch(
+          yield* fileSystem.readFileString(environment.desktopSettingsPath),
+        );
+        assert.deepEqual(persisted, { windowsTrayEnabled: true });
+
+        const reloaded = yield* settings.load;
+        assert.equal(reloaded.windowsTrayEnabled, true);
       }),
     ),
   );

@@ -65,6 +65,8 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { desktopWindowsTrayStateAtom } from "../../state/desktopWindowsTray";
+import { useEnvironmentQuery } from "../../state/query";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -75,7 +77,7 @@ import {
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
-import { isMacPlatform } from "../../lib/utils";
+import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
 import { primaryServerObservabilityAtom, primaryServerProvidersAtom } from "../../state/server";
 import { useProjects } from "../../state/entities";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
@@ -1736,6 +1738,48 @@ function LegacyFeaturesSection() {
   );
 }
 
+function WindowsTrayRow() {
+  const trayState = useEnvironmentQuery(
+    isElectron && isWindowsPlatform(navigator.platform) ? desktopWindowsTrayStateAtom : null,
+  );
+  const [isChanging, setIsChanging] = useState(false);
+
+  if (!isElectron || !isWindowsPlatform(navigator.platform)) return null;
+
+  return (
+    <SettingsRow
+      title="Keep running in system tray"
+      description="Keep T3 Code running when its main window is closed. Quit from the tray menu to stop it."
+      control={
+        <Switch
+          checked={trayState.data?.enabled ?? false}
+          disabled={isChanging || trayState.data === null}
+          onCheckedChange={(checked) => {
+            const bridge = window.desktopBridge;
+            if (!bridge) return;
+            setIsChanging(true);
+            void bridge
+              .setWindowsTrayEnabled(Boolean(checked))
+              .then(() => trayState.refresh())
+              .catch((error: unknown) => {
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Could not change system tray setting",
+                    description:
+                      error instanceof Error ? error.message : "System tray setting change failed.",
+                  }),
+                );
+              })
+              .finally(() => setIsChanging(false));
+          }}
+          aria-label="Keep running in system tray"
+        />
+      }
+    />
+  );
+}
+
 export function GeneralSettingsPanel() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
@@ -1792,6 +1836,7 @@ export function GeneralSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection title="General">
+        <WindowsTrayRow />
         <SettingsRow
           {...searchableSetting("project-grouping")}
           description="Combine matching repositories across environments."

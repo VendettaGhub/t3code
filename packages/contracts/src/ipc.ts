@@ -499,6 +499,11 @@ export const DesktopWslStateSchema = Schema.Struct({
   preflightError: Schema.NullOr(Schema.String),
 });
 
+export const DesktopWindowsTrayStateSchema = Schema.Struct({
+  enabled: Schema.Boolean,
+});
+export type DesktopWindowsTrayState = typeof DesktopWindowsTrayStateSchema.Type;
+
 /**
  * Renderer-facing snapshot of a desktop preview tab. Mirrors the main-process
  * PreviewTabState shape but uses serialisable primitives only.
@@ -1035,6 +1040,8 @@ export interface DesktopBridge {
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;
   setWslOnly: (enabled: boolean) => Promise<DesktopWslState>;
+  getWindowsTrayState: () => Promise<DesktopWindowsTrayState>;
+  setWindowsTrayEnabled: (enabled: boolean) => Promise<DesktopWindowsTrayState>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   /**
    * Multi-select JSON file picker that opens in the VS Code extensions

@@ -175,6 +175,7 @@ export const make = DesktopLifecycle.of({
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
+    const runSync = Effect.runSyncWith(context);
     let quitAllowed = false;
     let updaterQuitAllowed = false;
     yield* electronTheme.onUpdated(() => {
@@ -182,11 +183,13 @@ export const make = DesktopLifecycle.of({
         desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
       );
     });
+    const state = yield* DesktopState.DesktopState;
     yield* electronApp.onBeforeQuitForUpdate(() => {
       // Electron's updater owns the remaining quit/install/relaunch sequence.
-      // Cancelling the following app "before-quit" event breaks that sequence,
-      // most visibly on macOS where the native updater performs the relaunch.
+      // Mark quitting synchronously before Electron starts closing windows so
+      // close-to-tray cannot intercept the updater-controlled shutdown.
       updaterQuitAllowed = true;
+      runSync(Ref.set(state.quitting, true));
       void runEffect(
         logLifecycleInfo("allowing updater-controlled quit").pipe(
           Effect.withSpan("desktop.lifecycle.beforeQuitForUpdate"),

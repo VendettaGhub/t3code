@@ -103,6 +103,9 @@ describe("DesktopLifecycle", () => {
 
           appListeners.get("before-quit-for-update")?.();
 
+          const state = yield* DesktopState.DesktopState;
+          assert.isTrue(yield* Ref.get(state.quitting));
+
           let prevented = false;
           const event = {
             preventDefault: () => {
@@ -115,9 +118,6 @@ describe("DesktopLifecycle", () => {
             prevented,
             "cancelling this event prevents the updater from completing its relaunch",
           );
-
-          const state = yield* DesktopState.DesktopState;
-          assert.isTrue(yield* Ref.get(state.quitting));
         }),
       ).pipe(Effect.provide(layer));
     });
