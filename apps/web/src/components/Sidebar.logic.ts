@@ -467,6 +467,18 @@ export type SidebarThreadStatus =
   | "failed"
   | "ready";
 
+export function formatSidebarThreadTitleProgress(input: {
+  status: SidebarThreadStatus;
+  planProgress: SidebarThreadSummary["planProgress"];
+}): string | null {
+  if (input.status !== "working" || input.planProgress == null) return null;
+  const currentStep = Math.min(
+    input.planProgress.completedSteps + 1,
+    input.planProgress.totalSteps,
+  );
+  return `${currentStep}/${input.planProgress.totalSteps} · ${input.planProgress.step}`;
+}
+
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
   "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundLiveness"

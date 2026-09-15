@@ -20,6 +20,7 @@ import {
   resolveThreadRowClassName,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
+  formatSidebarThreadTitleProgress,
   resolveWorkingStartedAt,
   searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
@@ -52,6 +53,34 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("formatSidebarThreadTitleProgress", () => {
+  it("shows the current plan position and step for a working thread", () => {
+    expect(
+      formatSidebarThreadTitleProgress({
+        status: "working",
+        planProgress: {
+          step: "Run focused tests",
+          completedSteps: 3,
+          totalSteps: 10,
+        },
+      }),
+    ).toBe("4/10 · Run focused tests");
+  });
+
+  it("does not annotate a thread that is no longer working", () => {
+    expect(
+      formatSidebarThreadTitleProgress({
+        status: "ready",
+        planProgress: {
+          step: "Run focused tests",
+          completedSteps: 3,
+          totalSteps: 10,
+        },
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("shouldNavigateAfterProjectRemoval", () => {
   const projectThreads = [{ environmentId: "environment-local", id: "thread-1" }];

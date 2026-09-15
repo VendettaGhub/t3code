@@ -121,6 +121,7 @@ import { cn } from "~/lib/utils";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
 import {
   buildBulkTitleRegenerationContextMenuItem,
+  formatSidebarThreadTitleProgress,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -1040,6 +1041,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       "opacity-70 transition-opacity hover:opacity-100",
   );
 
+  const titleProgress = formatSidebarThreadTitleProgress({
+    status,
+    planProgress: thread.planProgress,
+  });
+
   const title = isRenaming ? (
     <input
       autoFocus
@@ -1081,6 +1087,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       )}
     >
       {thread.title}
+      {titleProgress !== null ? ` · ${titleProgress}` : null}
     </span>
   );
 
