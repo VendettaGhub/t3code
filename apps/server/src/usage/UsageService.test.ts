@@ -39,6 +39,23 @@ const WINDOW: UsageSummaryInput = {
   untilDay: UsageDay.make("2026-08-02"),
 };
 
+function hybridUsageLine(final: boolean): string {
+  return JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-08-01T10:00:00Z",
+    requestId: "req_1",
+    sessionId: "session-1",
+    message: {
+      id: "msg_1",
+      model: "gpt-5.6-sol",
+      stop_reason: final ? "tool_use" : null,
+      usage: final
+        ? { input_tokens: 2000, cache_read_input_tokens: 23424, output_tokens: 49 }
+        : { input_tokens: 27635, output_tokens: 0 },
+    },
+  });
+}
+
 const setup = Effect.gen(function* () {
   const home = yield* Effect.promise(() =>
     NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-service-test-")),
@@ -92,6 +109,33 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live(
+    "replaces cached provisional usage from an appended final snapshot including a tail",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, hybridUsageLine(false) + "\n"));
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(serviceLayers({ prefix: "usage-final-snapshot-test", home, settings })),
+        );
+        assert.strictEqual(
+          (yield* service.readSummary(WINDOW)).buckets[0]?.totals.uncachedInputTokens,
+          27635,
+        );
+        // Keep the final line unterminated first: it must supersede the cached
+        // estimate without overwriting the committed prefix used on the next scan.
+        yield* Effect.promise(() => NodeFSP.appendFile(transcript, hybridUsageLine(true)));
+        for (let pass = 0; pass < 3; pass += 1) {
+          const summary = yield* service.readSummary(WINDOW);
+          assert.strictEqual(summary.buckets[0]?.records, 1);
+          assert.strictEqual(summary.buckets[0]?.totals.uncachedInputTokens, 2000);
+          assert.strictEqual(summary.buckets[0]?.totals.cachedInputTokens, 23424);
+          assert.strictEqual(totalOutputTokens(summary), 49);
+          if (pass === 1) yield* Effect.promise(() => NodeFSP.appendFile(transcript, "\n"));
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.live("counts appended usage on a rescan of a grown transcript", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

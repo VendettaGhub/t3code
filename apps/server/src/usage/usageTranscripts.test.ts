@@ -37,6 +37,14 @@ function claudeLine(overrides: {
 }
 
 describe("parseClaudeLine", () => {
+  it("distinguishes completed usage from streaming estimates", () => {
+    const line = JSON.parse(claudeLine({ messageId: "msg_final", contentType: "text" }));
+    line.message.stop_reason = null;
+    expect(parseClaudeLine(JSON.stringify(line))).not.toHaveProperty("usageIsFinal", true);
+    line.message.stop_reason = "tool_use";
+    expect(parseClaudeLine(JSON.stringify(line))).toHaveProperty("usageIsFinal", true);
+  });
+
   it("extracts token totals and a dedupe key", () => {
     const record = parseClaudeLine(claudeLine({ messageId: "msg_1", contentType: "text" }));
 

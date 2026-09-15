@@ -8,7 +8,7 @@ import {
   type CachedFile,
   type ScanCache,
 } from "./usageScanCache.ts";
-import type { UsageRecord } from "./usageTranscripts.ts";
+import { parseClaudeLine, type UsageRecord } from "./usageTranscripts.ts";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
@@ -55,6 +55,32 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 }
 
 describe("scan cache round trip", () => {
+  it("rejects v3 records that discarded final usage snapshots", () => {
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    expect(decodeScanCache({ ...encoded, version: 3 }).size).toBe(0);
+  });
+
+  it("preserves completed usage through serialization and a later provisional copy", () => {
+    const final = parseClaudeLine(
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-08-07T10:00:00Z",
+        sessionId: "session-a",
+        message: {
+          id: "msg_1",
+          model: "gpt-5.6-sol",
+          stop_reason: "tool_use",
+          usage: { input_tokens: 2, cache_read_input_tokens: 1000, output_tokens: 7 },
+        },
+      }),
+    )!;
+    const restored = decodeScanCache(encodeScanCache(cacheWith([["/a.jsonl", 100, [final]]]))).get(
+      "/a.jsonl",
+    )!.records;
+    expect(restored[0]).toHaveProperty("usageIsFinal", true);
+    expect(dedupeWithinFile([...restored, record()])[0]?.totals.outputTokens).toBe(7);
+  });
+
   it("restores records unchanged", () => {
     const original = cacheWith([
       ["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:", model: "claude-opus-5" })]],
@@ -281,6 +307,42 @@ describe("pruneScanCache with an unwalked root", () => {
 });
 
 describe("dedupeWithinFile", () => {
+  it("replaces the entire provisional token snapshot with completed usage", () => {
+    const initial = record({
+      totals: {
+        ...record().totals,
+        uncachedInputTokens: 27635,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 100,
+      },
+    });
+    const final = parseClaudeLine(
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-08-07T10:00:00Z",
+        sessionId: "copied-session",
+        message: {
+          id: "msg_1",
+          model: initial.model,
+          stop_reason: "tool_use",
+          usage: { input_tokens: 2000, cache_read_input_tokens: 23424, output_tokens: 49 },
+        },
+      }),
+    )!;
+    const kept = dedupeWithinFile([initial, final, initial, final]);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.totals).toEqual({
+      uncachedInputTokens: 2000,
+      cachedInputTokens: 23424,
+      cacheCreationTokens: 0,
+      outputTokens: 49,
+      reasoningTokens: 0,
+    });
+    expect(kept[0]?.timestampMs).toBe(initial.timestampMs);
+    expect(kept[0]?.sessionId).toBe(initial.sessionId);
+  });
+
   it("keeps the first record per dedupe key", () => {
     const kept = dedupeWithinFile([
       record({ totals: { ...record().totals, outputTokens: 1 } }),

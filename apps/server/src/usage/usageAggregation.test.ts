@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { UsageAggregator } from "./usageAggregation.ts";
 import type { RateTable } from "./usagePricing.ts";
-import type { UsageRecord } from "./usageTranscripts.ts";
+import { parseClaudeLine, type UsageRecord } from "./usageTranscripts.ts";
 
 const rates: RateTable = new Map([
   [
@@ -61,6 +61,40 @@ function aggregate(
 }
 
 describe("UsageAggregator", () => {
+  it("corrects a provisional cross-file record without adding a message or moving its day", () => {
+    const initial = record({ dedupeKey: "msg_1:", reportedCostUsd: 2 });
+    const final = parseClaudeLine(
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-08-08T10:00:00Z",
+        sessionId: "copied-session",
+        message: {
+          id: "msg_1",
+          model: initial.model,
+          stop_reason: "end_turn",
+          usage: { input_tokens: 2, cache_read_input_tokens: 1000, output_tokens: 7 },
+        },
+      }),
+    )!;
+    const result = aggregate([initial, final, initial, final]);
+    expect(result.duplicatesDropped).toBe(3);
+    expect(result.buckets).toHaveLength(1);
+    const bucket = result.buckets[0]!;
+    expect(bucket.day).toBe("2026-08-07");
+    expect(bucket.records).toBe(1);
+    expect(bucket.sessions).toBe(1);
+    expect(bucket.totals).toEqual({
+      uncachedInputTokens: 2,
+      cachedInputTokens: 1000,
+      cacheCreationTokens: 0,
+      outputTokens: 7,
+      reasoningTokens: 0,
+    });
+    expect(bucket.costUsd).toBeCloseTo(0.00137, 9);
+    expect(bucket.costSource).toBe("modelPriced");
+    expect(bucket.cacheSavingsUsd).toBeCloseTo(0.009, 9);
+  });
+
   it("requires exact bounds for hourly aggregation", () => {
     expect(
       () =>

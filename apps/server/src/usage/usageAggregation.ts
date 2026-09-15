@@ -14,7 +14,7 @@
  */
 import type { UsageBucket, UsageDay, UsageResolution, UsageTokenTotals } from "@t3tools/contracts";
 
-import { addTotals, EMPTY_TOTALS, type UsageRecord } from "./usageTranscripts.ts";
+import { addTotals, EMPTY_TOTALS, preferFinalUsage, type UsageRecord } from "./usageTranscripts.ts";
 import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
 
 /**
@@ -83,7 +83,7 @@ export interface AggregateResult {
  */
 export class UsageAggregator {
   readonly #buckets = new Map<string, MutableBucket>();
-  readonly #seen = new Set<string>();
+  readonly #seen = new Map<string, { record: UsageRecord; bucket: MutableBucket | null }>();
   readonly #toDay: (timestampMs: number) => string;
   readonly #hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null;
   readonly #options: AggregateOptions;
@@ -112,12 +112,22 @@ export class UsageAggregator {
    * that landed rather than everything the mtime prefilter happened to admit.
    */
   add(record: UsageRecord): boolean {
+    const entry = { record, bucket: null as MutableBucket | null };
     if (record.dedupeKey !== null) {
-      if (this.#seen.has(record.dedupeKey)) {
+      const previous = this.#seen.get(record.dedupeKey);
+      if (previous !== undefined) {
         this.#duplicatesDropped += 1;
+        const selected = preferFinalUsage(previous.record, record);
+        if (selected !== previous.record) {
+          if (previous.bucket !== null) {
+            this.#adjustUsage(previous.bucket, previous.record, -1);
+            this.#adjustUsage(previous.bucket, selected, 1);
+          }
+          previous.record = selected;
+        }
         return false;
       }
-      this.#seen.add(record.dedupeKey);
+      this.#seen.set(record.dedupeKey, entry);
     }
 
     if (
@@ -160,6 +170,14 @@ export class UsageAggregator {
       this.#buckets.set(key, bucket);
     }
 
+    entry.bucket = bucket;
+    this.#adjustUsage(bucket, record, 1);
+    bucket.records += 1;
+    if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
+    return true;
+  }
+
+  #adjustUsage(bucket: MutableBucket, record: UsageRecord, direction: 1 | -1): void {
     const priced = priceUsage(
       this.#options.rates,
       record.model,
@@ -167,14 +185,18 @@ export class UsageAggregator {
       record.reportedCostUsd,
     );
 
-    bucket.totals = addTotals(bucket.totals, record.totals);
-    bucket.costUsd += priced.costUsd;
-    bucket.cacheSavingsUsd += cacheSavingsUsd(this.#options.rates, record.model, record.totals);
-    bucket.records += 1;
-    if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
-    if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;
-    if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
-    return true;
+    bucket.totals = addTotals(bucket.totals, {
+      uncachedInputTokens: direction * record.totals.uncachedInputTokens,
+      cachedInputTokens: direction * record.totals.cachedInputTokens,
+      cacheCreationTokens: direction * record.totals.cacheCreationTokens,
+      outputTokens: direction * record.totals.outputTokens,
+      reasoningTokens: direction * record.totals.reasoningTokens,
+    });
+    bucket.costUsd += direction * priced.costUsd;
+    bucket.cacheSavingsUsd +=
+      direction * cacheSavingsUsd(this.#options.rates, record.model, record.totals);
+    if (priced.costSource === "unpriced") bucket.unpricedRecords += direction;
+    if (priced.costSource === "providerReported") bucket.providerReportedRecords += direction;
   }
 
   finish(): AggregateResult {

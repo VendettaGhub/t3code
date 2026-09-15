@@ -319,13 +319,12 @@ export const make = Effect.gen(function* () {
       if (parsed === null) return [];
 
       // Stored already de-duplicated within the file, which is 99% of all
-      // duplicates. The aggregator still runs the cross-file dedupe pass. One
-      // seen set spans the cached base, the new lines, and the tail so a
-      // resumed parse dedupes exactly like a full one.
+      // duplicates. Keep the tail independent: it may upgrade a provisional
+      // prefix record for this scan, but is re-read on growth. The aggregator
+      // resolves both cross-file duplicates and prefix/tail snapshots.
       const base = parsed.resumed && cached !== undefined ? cached.records : [];
-      const seen = new Set<string>();
-      const records = dedupeWithinFile([...base, ...parsed.records], seen);
-      const tailRecords = dedupeWithinFile(parsed.tailRecords, seen);
+      const records = dedupeWithinFile([...base, ...parsed.records]);
+      const tailRecords = dedupeWithinFile(parsed.tailRecords);
 
       fileCache.set(filePath, {
         size,

@@ -15,11 +15,30 @@ export interface UsageRecord {
   readonly sessionId: string;
   readonly totals: UsageTokenTotals;
   readonly reportedCostUsd: number | null;
+  /** Claude's completed message usage supersedes earlier streaming estimates. */
+  readonly usageIsFinal?: true;
   /**
    * Key for cross-file de-duplication, or `null` when the record is inherently
    * unique and needs no dedup.
    */
   readonly dedupeKey: string | null;
+}
+
+/** Keep the original message attribution, but replace provisional usage as a unit. */
+export function preferFinalUsage(previous: UsageRecord, next: UsageRecord): UsageRecord {
+  if (
+    previous.provider !== "claude" ||
+    next.provider !== "claude" ||
+    previous.usageIsFinal ||
+    !next.usageIsFinal
+  )
+    return previous;
+  return {
+    ...previous,
+    totals: next.totals,
+    reportedCostUsd: next.reportedCostUsd,
+    usageIsFinal: true,
+  };
 }
 
 const EMPTY_TOTALS: UsageTokenTotals = {
@@ -91,10 +110,9 @@ export function grokCostTicksToUsd(ticks: unknown): number | null {
 /**
  * Parses one line of a Claude Code transcript.
  *
- * T3 Code writes one record per assistant *content block*, and every one of
- * those records repeats the same complete `usage` object for the parent
- * message. Summing them overcounts by roughly 2.4x on a real workload, so the
- * caller must drop repeats by `dedupeKey` and keep the first.
+ * Each assistant content block repeats its parent message's usage. Streaming
+ * blocks can contain estimates; a non-null stop reason identifies completed
+ * usage. Callers deduplicate by key and prefer that completed snapshot.
  */
 export function parseClaudeLine(line: string): UsageRecord | null {
   let parsed: unknown;
@@ -146,6 +164,9 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey,
+    ...(typeof messageRecord["stop_reason"] === "string" && messageRecord["stop_reason"].length > 0
+      ? { usageIsFinal: true as const }
+      : {}),
   };
 }
 
