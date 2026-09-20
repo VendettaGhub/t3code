@@ -29,6 +29,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "agents",
+  "sidechats",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -85,7 +86,13 @@ export type RightPanelSurface =
     }
   /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: "agents"; kind: "agents" };
+  | { id: "agents"; kind: "agents" }
+  /**
+   * The thread's sidechats, as one index/detail surface. Singleton on purpose:
+   * the list is server-owned and unlimited, so a tab per sidechat would make
+   * the tab bar the list.
+   */
+  | { id: "sidechats"; kind: "sidechats"; selectedSidechatId?: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
@@ -157,6 +164,7 @@ interface RightPanelStoreState {
   activateTerminal: (ref: ScopedThreadRef, surfaceId: string, terminalId: string) => void;
   closeTerminal: (ref: ScopedThreadRef, surfaceId: string, terminalId: string) => void;
   activateSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
+  selectSidechat: (ref: ScopedThreadRef, sidechatId: string | null) => void;
   closeSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurfacesToRight: (ref: ScopedThreadRef, surfaceId: string) => void;
@@ -191,6 +199,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "agents":
       return { id: "agents", kind };
+    case "sidechats":
+      return { id: "sidechats", kind };
     case "device":
       return { id: "device", kind };
   }
@@ -704,6 +714,23 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               ? { ...current, isOpen: true, activeSurfaceId: surfaceId }
               : current,
           ),
+        ),
+      selectSidechat: (ref, sidechatId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            if (
+              sidechatId !== null &&
+              !current.surfaces.some((surface) => surface.kind === "sidechats")
+            ) {
+              return current;
+            }
+            const surfaces = current.surfaces.map((surface) => {
+              if (surface.kind !== "sidechats") return surface;
+              if (sidechatId === null) return { id: "sidechats", kind: "sidechats" } as const;
+              return { ...surface, selectedSidechatId: sidechatId };
+            });
+            return { ...current, surfaces };
+          }),
         ),
       closeSurface: (ref, surfaceId) =>
         set((state) =>

@@ -109,6 +109,7 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+import { parseSideQuestionCommand } from "../sidechat/sidechatCommand";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -147,6 +148,8 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  /** `/btw` opens a fresh native side question instead of sending to the main thread. */
+  readonly onOpenSideQuestion?: (question: string | null) => void | Promise<void>;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
@@ -484,6 +487,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       if (openUsageLimits()) onChangeDraftMessage("");
       return;
     }
+    const sideQuestion = parseSideQuestionCommand(props.draftMessage);
+    if (sideQuestion !== null && props.onOpenSideQuestion) {
+      await props.onOpenSideQuestion(sideQuestion.question);
+      return;
+    }
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
@@ -511,6 +519,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     openUsageLimits,
     usageLimitsOffered,
     onSendMessage,
+    props.onOpenSideQuestion,
     props.environmentId,
     props.environmentLabel,
     props.selectedThread.id,

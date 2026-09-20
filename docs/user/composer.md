@@ -86,6 +86,29 @@ The quoted text and comment count toward the message limit.
 Mobile displays saved quotes and comments, but does not create citations or
 navigate to their sources.
 
+## Ask a side question
+
+Use **Side question** or `/btw <question>` to explore a separate question with
+the context of the latest completed Codex or Claude Code turn. Bare `/btw`
+opens a fresh sidechat without sending a message. Finish active work and resolve
+pending requests before starting one.
+Each sidechat keeps its own conversation; later messages in the source thread
+are not added to its starting context. Use **History** to explicitly resume an
+older sidechat; a new question starts from the current main context.
+
+On web and desktop, `/btw` accepts plain text only. To include attachments or
+context chips, open a side question first and attach them in its composer.
+
+Sidechats share the source's files, including when it uses a worktree. Concurrent
+edits can conflict, and file restore may be unavailable while another thread uses
+the directory. Stopping a sidechat does not undo its file changes.
+
+On web and desktop, select sidechat text and choose **Use selection & return**. On
+mobile, use **Use in main chat** on a message. The result is appended to the
+source draft without sending it or replacing existing text. Drafts stay on the
+current client. Provider caching may reduce repeated input, but cache hits are
+not guaranteed.
+
 ## Recall a sent prompt
 
 Press `ArrowUp` in an empty composer to bring back the last prompt you sent in this thread. Press

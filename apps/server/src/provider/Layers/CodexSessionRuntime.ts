@@ -81,6 +81,7 @@ function configuredMcpToolAvailability(
 
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
+  sidechat: Schema.optional(Schema.Boolean),
 });
 const CodexUserInputAnswerObject = Schema.Struct({
   answers: Schema.Array(Schema.String),
@@ -178,6 +179,8 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /** Sidechat resumes must fail instead of silently creating blank context. */
+  readonly resumeMustSucceed?: boolean;
   readonly appServerArgs?: ReadonlyArray<string>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
   readonly mcpCapabilities?: ReadonlySet<string>;
@@ -217,6 +220,24 @@ export interface CodexSessionRuntimeShape {
   readonly rollbackThread: (
     numTurns: number,
   ) => Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
+  readonly forkThread?: (
+    lastTurnId: TurnId,
+  ) => Effect.Effect<{ readonly threadId: string; readonly resumeCursor: CodexResumeCursor }, CodexSessionRuntimeError>;
+  /**
+   * Fork directly from a provider cursor without resuming that source in the
+   * target runtime. Native app-server fork accepts the source provider id.
+   */
+  readonly forkThreadFromProviderId?: (input: {
+    readonly providerThreadId: string;
+    readonly lastTurnId: TurnId;
+  }) => Effect.Effect<
+    { readonly threadId: string; readonly resumeCursor: CodexResumeCursor },
+    CodexSessionRuntimeError
+  >;
+  readonly deleteThreadByProviderId?: (
+    providerThreadId: string,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly deleteThread?: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly uploadFeedback: (
     reason?: string,
   ) => Effect.Effect<EffectCodexSchema.V2FeedbackUploadResponse, CodexSessionRuntimeError>;
@@ -728,6 +749,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly resumeMustSucceed?: boolean;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -763,6 +785,9 @@ export const openCodexThread = (input: {
         ),
       ),
       Effect.catchIf(isRecoverableThreadResumeError, (error) =>
+        input.resumeMustSucceed === true
+          ? Effect.fail(error)
+          :
         Effect.logWarning("codex app-server thread resume fell back to fresh start", {
           threadId: input.threadId,
           requestedRuntimeMode: input.runtimeMode,
@@ -1168,6 +1193,15 @@ function toCodexUserInputAnswers(
 
 function currentProviderThreadId(session: ProviderSession): string | undefined {
   return readResumeCursorThreadId(session.resumeCursor);
+}
+
+export function makeResumeCursor(providerThreadId: string, previous: unknown): CodexResumeCursor {
+  return {
+    threadId: providerThreadId,
+    ...(isCodexResumeCursorSchema(previous) && previous.sidechat === true
+      ? { sidechat: true }
+      : {}),
+  };
 }
 
 function updateSession(
@@ -1996,9 +2030,9 @@ export const makeCodexSessionRuntime = (
           if (providerThreadId && payload.thread.id !== providerThreadId) {
             return Effect.void;
           }
-          return updateSession(sessionRef, {
-            resumeCursor: { threadId: payload.thread.id },
-          });
+          return updateSession(sessionRef, (session) => ({
+            resumeCursor: makeResumeCursor(payload.thread.id, session.resumeCursor),
+          }));
         }),
       ),
     );
@@ -2444,6 +2478,9 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...(options.resumeMustSucceed === undefined
+          ? {}
+          : { resumeMustSucceed: options.resumeMustSucceed }),
       });
 
       const providerThreadId = opened.thread.id;
@@ -2452,7 +2489,7 @@ export const makeCodexSessionRuntime = (
         status: "ready",
         cwd: opened.cwd,
         model: opened.model,
-        resumeCursor: { threadId: providerThreadId },
+        resumeCursor: makeResumeCursor(providerThreadId, options.resumeCursor),
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
@@ -2490,6 +2527,53 @@ export const makeCodexSessionRuntime = (
       yield* Queue.shutdown(serverNotifications);
       yield* Queue.shutdown(events);
     });
+
+    const requestNativeFork = (providerThreadId: string, lastTurnId: TurnId) =>
+      Effect.gen(function* () {
+        const requestedModel = normalizeCodexModelSlug(options.model);
+        const response = yield* client.raw.request("thread/fork", {
+          threadId: providerThreadId,
+          lastTurnId,
+          ephemeral: false,
+          ...buildThreadStartParams({
+            cwd: options.cwd,
+            runtimeMode: options.runtimeMode,
+            model: requestedModel,
+            serviceTier: options.serviceTier,
+          }),
+        });
+        const target = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ thread: Schema.Struct({ id: Schema.String }) }),
+        )(response).pipe(
+          Effect.mapError((error) =>
+            CodexErrors.CodexAppServerRequestError.invalidPayload(
+              "thread/fork",
+              "decode-payload",
+              error,
+            ),
+          ),
+        );
+        const targetThreadId = target.thread.id;
+        return {
+          threadId: targetThreadId,
+          resumeCursor: { threadId: targetThreadId, sidechat: true },
+        };
+      });
+    const forkThreadFromProviderId = (input: {
+      readonly providerThreadId: string;
+      readonly lastTurnId: TurnId;
+    }) =>
+      Effect.gen(function* () {
+        yield* client.request("initialize", buildCodexInitializeParams());
+        yield* client.notify("initialized", undefined);
+        return yield* requestNativeFork(input.providerThreadId, input.lastTurnId);
+      });
+    const deleteThreadByProviderId = (providerThreadId: string) =>
+      Effect.gen(function* () {
+        yield* client.request("initialize", buildCodexInitializeParams());
+        yield* client.notify("initialized", undefined);
+        yield* client.request("thread/delete", { threadId: providerThreadId });
+      });
 
     return {
       start,
@@ -2549,12 +2633,13 @@ export const makeCodexSessionRuntime = (
             activeTurnId: session.activeTurnId ?? turnId,
             ...(normalizedModel ? { model: normalizedModel } : {}),
           }));
-          const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+          const resumedSession = yield* Ref.get(sessionRef);
+          const resumedProviderThreadId = currentProviderThreadId(resumedSession);
           return {
             threadId: options.threadId,
             turnId,
             ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              ? { resumeCursor: makeResumeCursor(resumedProviderThreadId, resumedSession.resumeCursor) }
               : {}),
           } satisfies ProviderTurnStartResult;
         }),
@@ -2615,6 +2700,17 @@ export const makeCodexSessionRuntime = (
           });
           return snapshot;
         }),
+      forkThread: (lastTurnId) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          return yield* requestNativeFork(providerThreadId, lastTurnId);
+        }),
+      forkThreadFromProviderId,
+      deleteThreadByProviderId,
+      deleteThread: Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        yield* client.request("thread/delete", { threadId: providerThreadId });
+      }),
       uploadFeedback: (reason) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

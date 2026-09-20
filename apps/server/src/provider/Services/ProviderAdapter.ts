@@ -16,6 +16,8 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ModelSelection,
+  RuntimeMode,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
   ThreadId,
@@ -52,6 +54,23 @@ export interface ProviderAdapterCapabilities {
   readonly promptlessTurnContinuation?: boolean;
   /** False when native conversation history cannot be rewound. */
   readonly supportsConversationRollback?: boolean;
+  /** Native provider fork preserves context without copying visible history. */
+  readonly supportsThreadFork?: boolean;
+}
+
+export interface ProviderThreadForkInput {
+  readonly sourceThreadId: ThreadId;
+  readonly targetThreadId: ThreadId;
+  readonly lastTurnId: TurnId;
+  readonly cwd: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly modelSelection?: ModelSelection;
+  readonly resumeCursor: unknown;
+}
+
+export interface ProviderThreadForkResult {
+  readonly providerThreadId: string;
+  readonly resumeCursor: unknown;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -77,6 +96,20 @@ export interface ProviderAdapterShape<TError> {
   readonly startSession: (
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
+
+  /** Fork a persisted provider conversation without creating a visible T3 thread. */
+  readonly forkThread?: (
+    input: ProviderThreadForkInput,
+  ) => Effect.Effect<ProviderThreadForkResult, TError>;
+
+  /** Delete a native fork when the subsequent T3 projection write fails. */
+  readonly deleteThread?: (input: {
+    readonly threadId: ThreadId;
+    readonly resumeCursor: unknown;
+    readonly cwd: string;
+    readonly runtimeMode: RuntimeMode;
+    readonly modelSelection?: ModelSelection;
+  }) => Effect.Effect<void, TError>;
 
   /**
    * Send a turn to an active provider session.

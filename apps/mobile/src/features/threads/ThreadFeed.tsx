@@ -272,6 +272,8 @@ export interface ThreadFeedProps {
   readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
+  /** Sidechat-only action; inserts the selected message into the source thread draft. */
+  readonly onAppendSidechatMessage?: (messageId: MessageId, text: string) => void;
   /** Non-null when older turns exist beyond the loaded window. */
   readonly loadEarlier?: {
     readonly loading: boolean;
@@ -1359,6 +1361,7 @@ function renderFeedEntry(
     | "skills"
     | "dispatchingMessageId"
     | "onEditPendingMessage"
+    | "onAppendSidechatMessage"
   > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
@@ -1674,6 +1677,17 @@ function renderFeedEntry(
                 iconSize={13}
               />
             ) : null}
+            {props.onAppendSidechatMessage && message.text.trim().length > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Add message to main composer"
+                hitSlop={8}
+                className="px-1"
+                onPress={() => props.onAppendSidechatMessage?.(message.id, message.text)}
+              >
+                <Text className="font-t3-medium text-xs text-foreground-muted">Use in main chat</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
       );
@@ -1739,6 +1753,17 @@ function renderFeedEntry(
               buttonSize={28}
               iconSize={13}
             />
+            {props.onAppendSidechatMessage && message.text.trim().length > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Add message to main composer"
+                hitSlop={8}
+                className="px-1"
+                onPress={() => props.onAppendSidechatMessage?.(message.id, message.text)}
+              >
+                <Text className="font-t3-medium text-xs text-foreground-muted">Use in main chat</Text>
+              </Pressable>
+            ) : null}
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>
@@ -2763,6 +2788,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             unsettledTurnId,
             isWorking: props.activeWorkStartedAt !== null,
             onCopyWorkRow,
+            onAppendSidechatMessage: props.onAppendSidechatMessage,
             onToggleWorkGroup,
             onToggleWorkRow,
             onToggleTurnFold,
@@ -2799,6 +2825,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       setupAnchorIndex,
       props.dispatchingMessageId,
       props.onEditPendingMessage,
+      props.onAppendSidechatMessage,
       copiedRowId,
       disclosureToggleSettling,
       expandedWorkRows,

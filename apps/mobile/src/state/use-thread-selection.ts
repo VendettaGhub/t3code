@@ -28,6 +28,7 @@ import { useThreadOutboxMessages } from "./use-thread-outbox";
 type ThreadSelectionRouteParams = {
   readonly environmentId?: string | string[];
   readonly threadId?: string | string[];
+  readonly sidechatId?: string | string[];
 };
 
 function firstRouteParam(value: string | string[] | undefined): string | null {
@@ -63,6 +64,7 @@ function threadDetailToShell(
     interactionMode: thread.interactionMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    origin: thread.origin ?? null,
     linkedPullRequest: thread.linkedPullRequest ?? null,
     pullRequests: thread.pullRequests,
     branchPullRequest: thread.branchPullRequest ?? null,
@@ -90,7 +92,8 @@ function useResolvedThreadSelection(params: ThreadSelectionRouteParams | undefin
   const routeParams = params ?? {};
   const routeThreadRef = useMemo<ScopedThreadRef | null>(() => {
     const environmentId = firstRouteParam(routeParams.environmentId);
-    const threadId = firstRouteParam(routeParams.threadId);
+    const threadId =
+      firstRouteParam(routeParams.sidechatId) ?? firstRouteParam(routeParams.threadId);
     if (!environmentId || !threadId) {
       return null;
     }
@@ -99,7 +102,7 @@ function useResolvedThreadSelection(params: ThreadSelectionRouteParams | undefin
       environmentId: EnvironmentId.make(environmentId),
       threadId: ThreadId.make(threadId),
     };
-  }, [routeParams.environmentId, routeParams.threadId]);
+  }, [routeParams.environmentId, routeParams.sidechatId, routeParams.threadId]);
   const lastRouteThreadRef = useRef<ScopedThreadRef | null>(null);
   if (routeThreadRef !== null) {
     lastRouteThreadRef.current = routeThreadRef;

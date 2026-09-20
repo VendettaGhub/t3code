@@ -123,6 +123,7 @@ function renderTabs(
       onAddDiff={() => undefined}
       onAddFiles={() => undefined}
       onAddAgents={() => undefined}
+      onAddSidechats={() => undefined}
       onAddDevice={() => undefined}
       liveAgentCount={0}
       browserAvailable
@@ -132,6 +133,51 @@ function renderTabs(
       pullRequestAvailable={false}
       pullRequestsAvailable={false}
       agentsAvailable={false}
+      sidechatsAvailable={false}
+      deviceAvailable={false}
+    >
+      <div>content</div>
+    </RightPanelTabs>,
+  );
+}
+
+/** The launcher, which only renders while the panel has no surfaces. */
+function renderLauncher(sidechatsAvailable: boolean) {
+  return renderToStaticMarkup(
+    <RightPanelTabs
+      mode="inline"
+      surfaces={[]}
+      environmentId={null}
+      activeSurfaceId={null}
+      pendingSurfaceIds={new Set()}
+      previewSessions={{}}
+      desktopByTabId={{}}
+      terminalLabelsById={new Map()}
+      onActivate={() => undefined}
+      onCloseSurface={() => undefined}
+      onCloseOtherSurfaces={() => undefined}
+      onCloseSurfacesToRight={() => undefined}
+      onCloseAllSurfaces={() => undefined}
+      onCopyFilePath={() => undefined}
+      onAddBrowser={() => undefined}
+      onAddBrowserInProfile={() => undefined}
+      onAddTerminal={() => undefined}
+      onAddPullRequest={() => undefined}
+      onAddPullRequests={() => undefined}
+      onAddDiff={() => undefined}
+      onAddFiles={() => undefined}
+      onAddAgents={() => undefined}
+      onAddSidechats={() => undefined}
+      onAddDevice={() => undefined}
+      liveAgentCount={0}
+      browserAvailable={false}
+      terminalAvailable={false}
+      diffAvailable={false}
+      filesAvailable={false}
+      pullRequestAvailable={false}
+      pullRequestsAvailable={false}
+      agentsAvailable={false}
+      sidechatsAvailable={sidechatsAvailable}
       deviceAvailable={false}
     >
       <div>content</div>
@@ -159,6 +205,22 @@ describe("RightPanelTabs preview favicon", () => {
   it("hides a capture while the server session still describes another origin", () => {
     const html = renderTabs(favicon("data:image/png;base64,AAAA", "https://example.com/"));
     expect(html).not.toContain("data:image/png;base64,AAAA");
+  });
+});
+
+describe("sidechats launcher entry", () => {
+  it("claims S only while sidechats are available, and stays visible with a reason otherwise", () => {
+    // `data-surface-launcher-keys` is the launcher's live shortcut set: an
+    // unavailable surface must not swallow the letter, but must still be
+    // listed so the reason is discoverable.
+    const available = renderLauncher(true);
+    expect(available).toContain("Side question");
+    expect(/data-surface-launcher-keys="[^"]*S/u.test(available)).toBe(true);
+
+    const unavailable = renderLauncher(false);
+    expect(unavailable).toContain("Side question");
+    expect(/data-surface-launcher-keys="[^"]*S/u.test(unavailable)).toBe(false);
+    expect(unavailable).toContain('aria-disabled="true"');
   });
 });
 

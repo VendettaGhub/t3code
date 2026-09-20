@@ -68,6 +68,8 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  ThreadForkFailedError,
+  ThreadForkErrorSchema,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -142,6 +144,7 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
+import { forkSidechat } from "./orchestration/SidechatForker.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -3102,6 +3105,34 @@ const makeWsRpcLayer = (
               Effect.provideService(
                 ProviderSessionDirectory.ProviderSessionDirectory,
                 providerSessionDirectory,
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.threadFork]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.threadFork,
+            forkSidechat(input).pipe(
+              Effect.provideService(
+                OrchestrationEngine.OrchestrationEngineService,
+                orchestrationEngine,
+              ),
+              Effect.provideService(
+                ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                projectionSnapshotQuery,
+              ),
+              Effect.provideService(
+                ProviderSessionDirectory.ProviderSessionDirectory,
+                providerSessionDirectory,
+              ),
+              Effect.provideService(ProviderService.ProviderService, providerService),
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.catch((cause) =>
+                Schema.is(ThreadForkErrorSchema)(cause)
+                  ? Effect.fail(cause)
+                  : Effect.fail(
+                      new ThreadForkFailedError({ sourceThreadId: input.sourceThreadId, cause }),
+                    ),
               ),
             ),
             { "rpc.aggregate": "workspace" },

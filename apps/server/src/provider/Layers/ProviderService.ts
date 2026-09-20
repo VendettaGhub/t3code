@@ -2184,6 +2184,52 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getCapabilities: ProviderServiceMethod<"getCapabilities"> = (instanceId) =>
     registry.getByInstance(instanceId).pipe(Effect.map((adapter) => adapter.capabilities));
 
+  const forkThread: ProviderService.ProviderServiceShape["forkThread"] = Effect.fn(
+    "forkThread",
+  )(function* (input) {
+    const bindingOption = yield* directory.getBinding(input.sourceThreadId);
+    const binding = Option.getOrUndefined(bindingOption);
+    if (!binding || binding.resumeCursor == null) {
+      return yield* toValidationError(
+        "ProviderService.forkThread",
+        `Cannot fork '${input.sourceThreadId}' because no persisted provider resume cursor exists.`,
+      );
+    }
+    const instanceId = yield* requireBindingInstanceId("ProviderService.forkThread", binding);
+    const adapter = yield* registry.getByInstance(instanceId);
+    if (adapter.capabilities.supportsThreadFork !== true || adapter.forkThread === undefined) {
+      return yield* toValidationError(
+        "ProviderService.forkThread",
+        `Provider '${adapter.provider}' does not support native thread forks.`,
+      );
+    }
+    return yield* adapter.forkThread({
+      sourceThreadId: input.sourceThreadId,
+      targetThreadId: input.targetThreadId,
+      lastTurnId: input.lastTurnId,
+      cwd: input.cwd,
+      runtimeMode: input.runtimeMode,
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+      resumeCursor: binding.resumeCursor,
+    });
+  });
+
+  const deleteForkedThread: ProviderService.ProviderServiceShape["deleteForkedThread"] = Effect.fn(
+    "deleteForkedThread",
+  )(function* (input) {
+    const bindingOption = yield* directory.getBinding(input.threadId);
+    const binding = Option.getOrUndefined(bindingOption);
+    const instanceId =
+      input.providerInstanceId ??
+      (binding === undefined
+        ? undefined
+        : yield* requireBindingInstanceId("ProviderService.deleteForkedThread", binding));
+    if (instanceId === undefined) return;
+    const adapter = yield* registry.getByInstance(instanceId);
+    if (adapter.deleteThread === undefined) return;
+    yield* adapter.deleteThread(input);
+  });
+
   const getInstanceInfo: ProviderServiceMethod<"getInstanceInfo"> = (instanceId) =>
     registry.getInstanceInfo(instanceId);
 
@@ -2408,6 +2454,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     stopSession,
     listSessions,
     getCapabilities,
+    forkThread,
+    deleteForkedThread,
     getInstanceInfo,
     assertConversationRollbackSupported,
     rollbackConversation,

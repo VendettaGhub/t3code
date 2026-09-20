@@ -25,14 +25,20 @@ import type {
   ProviderUploadFeedbackResult,
   MessageId,
   ThreadId,
+  TurnId,
   ProviderTurnStartResult,
+  ModelSelection,
+  RuntimeMode,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderThreadForkResult,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -101,6 +107,25 @@ export interface ProviderServiceShape {
   readonly getCapabilities: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
+
+  readonly forkThread?: (input: {
+    readonly sourceThreadId: ThreadId;
+    readonly targetThreadId: ThreadId;
+    readonly lastTurnId: TurnId;
+    readonly cwd: string;
+    readonly runtimeMode: RuntimeMode;
+    readonly modelSelection?: ModelSelection;
+  }) => Effect.Effect<ProviderThreadForkResult, ProviderServiceError>;
+
+  readonly deleteForkedThread?: (input: {
+    readonly threadId: ThreadId;
+    /** Needed when the target binding write itself failed before cleanup. */
+    readonly providerInstanceId?: ProviderInstanceId;
+    readonly resumeCursor: unknown;
+    readonly cwd: string;
+    readonly runtimeMode: RuntimeMode;
+    readonly modelSelection?: ModelSelection;
+  }) => Effect.Effect<void, ProviderServiceError>;
 
   readonly getInstanceInfo: (
     instanceId: ProviderInstanceId,

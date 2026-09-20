@@ -251,6 +251,7 @@ type PromptQueueItem =
 
 interface ClaudeResumeState {
   readonly threadId?: ThreadId;
+  readonly sidechat?: boolean;
   readonly resume?: string;
   readonly resumeSessionAt?: string;
   readonly turnCount?: number;
@@ -972,6 +973,7 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
   }
   const cursor = resumeCursor as {
     threadId?: unknown;
+    sidechat?: unknown;
     resume?: unknown;
     sessionId?: unknown;
     resumeSessionAt?: unknown;
@@ -984,6 +986,7 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
     threadIdCandidate && !isSyntheticClaudeThreadId(threadIdCandidate)
       ? ThreadId.make(threadIdCandidate)
       : undefined;
+  const sidechat = cursor.sidechat === true ? true : undefined;
   const resumeCandidate =
     typeof cursor.resume === "string"
       ? cursor.resume
@@ -1002,6 +1005,7 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
 
   return {
     ...(threadId ? { threadId } : {}),
+    ...(sidechat ? { sidechat } : {}),
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),
     ...(turnStartMessageIds ? { turnStartMessageIds } : {}),
@@ -2108,6 +2112,91 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
+  // History helpers consult process.env. Keep the provider home isolated in a
+  // child process when this adapter is scoped to a different Claude home.
+  const historyWorkerArguments = (yield* HostProcessIsExecutable)
+    ? ["__claude-history"]
+    : undefined;
+
+  const runScopedHistoryCommand = async (
+    method: "getSessionMessages" | "forkSession",
+    sessionId: string,
+    args: object,
+  ): Promise<string> => {
+    const workerArguments =
+      historyWorkerArguments ??
+      [
+        await Effect.runPromise(
+          path.fromFileUrl(
+            new URL(
+              import.meta.url.endsWith(".ts")
+                ? "../../claude-history-worker.ts"
+                : "./claude-history-worker.mjs",
+              import.meta.url,
+            ),
+          ),
+        ),
+      ];
+    const result = await Effect.runPromise(
+      spawnAndCollect(
+        process.execPath,
+        ChildProcess.make(
+          process.execPath,
+          [...workerArguments, method, sessionId, encodeHistoryArgs(args)],
+          { env: { ...claudeEnvironment, ELECTRON_RUN_AS_NODE: "1" } },
+        ),
+      ).pipe(
+        Effect.timeout("30 seconds"),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+    );
+    if (result.code !== 0) {
+      throw new Error(result.stderr || "Claude history command failed.");
+    }
+    return result.stdout;
+  };
+
+  const readNativeHistory = (
+    sessionId: string,
+    cwd: string,
+    threadId: ThreadId,
+  ): Effect.Effect<ReadonlyArray<ClaudeHistoryMessage>, ProviderAdapterError> =>
+    Effect.tryPromise({
+      try: async () => {
+        const readOptions = { dir: cwd, includeSystemMessages: true };
+        if (options?.getSessionMessages) {
+          return options.getSessionMessages(sessionId, readOptions);
+        }
+        if (claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR) {
+          return getSessionMessages(sessionId, readOptions);
+        }
+        return decodeSessionMessages(
+          await runScopedHistoryCommand("getSessionMessages", sessionId, readOptions),
+        );
+      },
+      catch: (cause) => toRequestError(threadId, "thread/fork", cause),
+    });
+
+  const forkNativeHistory = (
+    sessionId: string,
+    cwd: string,
+    upToMessageId: string,
+    threadId: ThreadId,
+  ): Effect.Effect<{ readonly sessionId: string }, ProviderAdapterError> =>
+    Effect.tryPromise({
+      try: async () => {
+        const forkOptions = { dir: cwd, upToMessageId };
+        if (options?.forkSession) return options.forkSession(sessionId, forkOptions);
+        if (claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR) {
+          return forkSession(sessionId, forkOptions);
+        }
+        return decodeHistoryFork(
+          await runScopedHistoryCommand("forkSession", sessionId, forkOptions),
+        );
+      },
+      catch: (cause) => toRequestError(threadId, "thread/fork", cause),
+    });
+
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const randomUUIDv4 = crypto.randomUUIDv4.pipe(
     Effect.mapError(
@@ -2191,6 +2280,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const resumeCursor = {
       threadId,
+      ...(readClaudeResumeState(context.startInput.resumeCursor)?.sidechat
+        ? { sidechat: true }
+        : {}),
       ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
       ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
       turnCount: context.turnStartMessageIds.length,
@@ -4417,6 +4509,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const startedAt = yield* nowIso;
       const resumeState = readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
+      const requestedSidechat =
+        typeof input.resumeCursor === "object" &&
+        input.resumeCursor !== null &&
+        (input.resumeCursor as { sidechat?: unknown }).sidechat === true;
+      if (
+        requestedSidechat &&
+        (resumeState?.sidechat !== true ||
+          resumeState.resume === undefined ||
+          (resumeState.threadId !== undefined && resumeState.threadId !== threadId))
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "A Claude sidechat session requires a valid native resume cursor for its target thread.",
+        });
+      }
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
@@ -5016,6 +5124,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(threadId ? { threadId } : {}),
         resumeCursor: {
           ...(threadId ? { threadId } : {}),
+          ...(resumeState?.sidechat ? { sidechat: true } : {}),
           ...(sessionId ? { resume: sessionId } : {}),
           ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
           turnCount: resumeState?.turnCount ?? 0,
@@ -5473,6 +5582,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         runtimeMode: context.session.runtimeMode,
         resumeCursor: fork
           ? {
+              ...(readClaudeResumeState(context.startInput.resumeCursor)?.sidechat
+                ? { threadId, sidechat: true }
+                : {}),
               resume: fork.sessionId,
               turnCount: retainedCount,
               turnStartMessageIds: retainedBoundaries,
@@ -5482,6 +5594,96 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const restarted = yield* requireSession(threadId);
       restarted.turns.push(...retainedTurns);
       return yield* snapshotThread(restarted);
+    },
+  );
+
+  const forkThread: NonNullable<ClaudeAdapterShape["forkThread"]> = Effect.fn("forkThread")(
+    function* (input) {
+      const sourceCursor = readClaudeResumeState(input.resumeCursor);
+      if (
+        sourceCursor?.resume === undefined ||
+        sourceCursor.resumeSessionAt === undefined ||
+        sourceCursor.threadId !== undefined && sourceCursor.threadId !== input.sourceThreadId ||
+        sourceCursor.turnStartMessageIds === undefined ||
+        sourceCursor.turnStartMessageIds.length === 0 ||
+        sourceCursor.turnStartMessageIds.some((id) => id === null || id.length === 0)
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "forkThread",
+          issue:
+            "Claude native sidechat requires a persisted resume id, checkpoint, and complete turn-boundary cursor.",
+        });
+      }
+
+      const sourceMessages = yield* readNativeHistory(
+        sourceCursor.resume,
+        input.cwd,
+        input.sourceThreadId,
+      );
+      const checkpoint = sourceMessages.at(-1);
+      if (
+        checkpoint === undefined ||
+        !sourceMessages.some((message) => message.uuid === sourceCursor.resumeSessionAt)
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "forkThread",
+          issue:
+            "Claude native sidechat requires the source checkpoint to be present in native history.",
+        });
+      }
+
+      const fork = yield* forkNativeHistory(
+        sourceCursor.resume,
+        input.cwd,
+        checkpoint.uuid,
+        input.sourceThreadId,
+      );
+      if (!isUuid(fork.sessionId)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/fork",
+          detail: "Claude returned an invalid native fork session id.",
+        });
+      }
+
+      const forkMessages = yield* readNativeHistory(
+        fork.sessionId,
+        input.cwd,
+        input.targetThreadId,
+      );
+      const remappedBoundaries = remapClaudeForkTurnBoundaries(
+        sourceMessages,
+        forkMessages,
+        sourceMessages.length,
+        sourceCursor.turnStartMessageIds,
+      );
+      const remappedResumeSessionAt = remapClaudeForkTurnBoundaries(
+        sourceMessages,
+        forkMessages,
+        sourceMessages.length,
+        [sourceCursor.resumeSessionAt],
+      )?.[0];
+      if (!remappedBoundaries || remappedResumeSessionAt == null) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/fork",
+          detail: "Claude native fork history did not preserve the exact sidechat cursor.",
+        });
+      }
+
+      return {
+        providerThreadId: fork.sessionId,
+        resumeCursor: {
+          threadId: input.targetThreadId,
+          sidechat: true,
+          resume: fork.sessionId,
+          resumeSessionAt: remappedResumeSessionAt,
+          turnCount: sourceCursor.turnCount ?? sourceCursor.turnStartMessageIds.length,
+          turnStartMessageIds: remappedBoundaries,
+        },
+      };
     },
   );
 
@@ -5569,9 +5771,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      supportsThreadFork: true,
     },
     compaction: { type: "slash-command", command: "/compact" },
     startSession,
+    forkThread,
     sendTurn,
     interruptTurn,
     readThread,

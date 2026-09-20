@@ -169,6 +169,11 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       ),
     );
 
+  const deleteByThreadId: ProviderSessionDirectoryShape["deleteByThreadId"] = (threadId) =>
+    repository
+      .deleteByThreadId({ threadId })
+      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.deleteByThreadId")));
+
   const recordImportedTranscript: ProviderSessionDirectoryShape["recordImportedTranscript"] = (
     input,
   ) =>
@@ -201,6 +206,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     recordImportedTranscript,
     getProvider,
     getBinding,
+    deleteByThreadId,
     listThreadIds,
     listBindings,
   } satisfies ProviderSessionDirectoryShape;

@@ -38,6 +38,14 @@ import {
   AgentSessionScanError,
 } from "./agentSessions.ts";
 import {
+  ThreadForkFailedError,
+  ThreadForkInput,
+  ThreadForkResult,
+  ThreadForkSourceBusyError,
+  ThreadForkSourceNotFoundError,
+  ThreadForkUnsupportedError,
+} from "./sidechat.ts";
+import {
   AssetAccessError,
   AssetCreateUrlInput,
   AssetCreateUrlResult,
@@ -290,6 +298,7 @@ export const WS_METHODS = {
   filesystemBrowse: "filesystem.browse",
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
+  threadFork: "thread.fork",
   assetsCreateUrl: "assets.createUrl",
   attachmentsCreateUploadUrl: "attachments.createUploadUrl",
   attachmentsDelete: "attachments.delete",
@@ -973,6 +982,18 @@ const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
   ]),
 });
 
+const WsThreadForkRpc = Rpc.make(WS_METHODS.threadFork, {
+  payload: ThreadForkInput,
+  success: ThreadForkResult,
+  error: Schema.Union([
+    ThreadForkSourceNotFoundError,
+    ThreadForkSourceBusyError,
+    ThreadForkUnsupportedError,
+    ThreadForkFailedError,
+    EnvironmentAuthorizationError,
+  ]),
+});
+
 const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
@@ -1462,6 +1483,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsFilesystemBrowseRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
+  WsThreadForkRpc,
   WsAssetsCreateUrlRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,

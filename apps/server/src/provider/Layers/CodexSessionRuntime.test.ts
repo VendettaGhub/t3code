@@ -16,6 +16,7 @@ import {
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  makeResumeCursor,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
@@ -111,6 +112,21 @@ describe("Codex thread history", () => {
       });
     }),
   );
+});
+
+describe("Codex sidechat resume cursor", () => {
+  it("retains the sidechat marker when notification or turn updates replace the provider id", () => {
+    NodeAssert.deepStrictEqual(
+      makeResumeCursor("provider-target-after-turn", {
+        threadId: "provider-target-before-turn",
+        sidechat: true,
+      }),
+      { threadId: "provider-target-after-turn", sidechat: true },
+    );
+    NodeAssert.deepStrictEqual(makeResumeCursor("provider-main", { threadId: "provider-main" }), {
+      threadId: "provider-main",
+    });
+  });
 });
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {
@@ -1024,6 +1040,44 @@ describe("openCodexThread", () => {
         calls.map((call) => call.method),
         ["thread/resume", "thread/start"],
       );
+    }),
+  );
+
+  it.effect("does not fall back for a sidechat resume when the provider thread is missing", () =>
+    Effect.gen(function* () {
+      const calls: Array<"thread/start" | "thread/resume"> = [];
+      const client = {
+        raw: {
+          request: () => {
+            calls.push("thread/resume");
+            return Effect.fail(
+              new CodexErrors.CodexAppServerRequestError({
+                code: -32603,
+                errorMessage: "thread not found",
+              }),
+            );
+          },
+        },
+        request: () => {
+          calls.push("thread/start");
+          return Effect.die("sidechat resume must never start a blank thread");
+        },
+      };
+
+      const error = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("sidechat-target"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "missing-sidechat-thread",
+        resumeMustSucceed: true,
+      }).pipe(Effect.flip);
+
+      NodeAssert.ok(isCodexAppServerRequestError(error));
+      NodeAssert.equal(error.errorMessage, "thread not found");
+      NodeAssert.deepStrictEqual(calls, ["thread/resume"]);
     }),
   );
 

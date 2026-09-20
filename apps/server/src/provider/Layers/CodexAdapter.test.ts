@@ -252,6 +252,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
   it.effect("returns validation error for non-codex provider on startSession", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
+      const runtimeFactoryCalls = sessionRuntimeFactory.factory.mock.calls.length;
       const result = yield* adapter
         .startSession({
           provider: ProviderDriverKind.make("claudeAgent"),
@@ -319,6 +320,48 @@ const sessionErrorLayer = it.layer(
 );
 
 sessionErrorLayer("CodexAdapterLive session errors", (it) => {
+  it.effect("rejects an invalid persisted resume cursor instead of starting blank", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const runtimeFactoryCalls = sessionRuntimeFactory.factory.mock.calls.length;
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("invalid-resume"),
+          resumeCursor: { threadId: 42 },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        NodeAssert.equal(result.failure._tag, "ProviderAdapterValidationError");
+        NodeAssert.equal(result.failure.operation, "startSession");
+      }
+      NodeAssert.equal(sessionRuntimeFactory.factory.mock.calls.length, runtimeFactoryCalls);
+    }),
+  );
+
+  it.effect("marks persisted sidechat resumes as strict", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sidechat-resume"),
+        resumeCursor: { threadId: "provider-sidechat", sidechat: true },
+        runtimeMode: "full-access",
+      });
+
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(runtime.options.resumeMustSucceed, true);
+      NodeAssert.deepStrictEqual(runtime.options.resumeCursor, {
+        threadId: "provider-sidechat",
+        sidechat: true,
+      });
+    }),
+  );
+
   it.effect("maps missing adapter sessions to ProviderAdapterSessionNotFoundError", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

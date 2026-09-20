@@ -20,6 +20,7 @@ import {
   ProviderRuntimeEvent,
   type RuntimeMode,
   ThreadId,
+  TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -392,6 +393,141 @@ describe("ClaudeAdapterLive", () => {
           issue: "Expected provider 'claudeAgent' but received 'codex'.",
         }),
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forks Claude at the completed native chain boundary and remaps the child cursor", () => {
+    const forkCalls: Array<Parameters<NonNullable<ClaudeAdapterLiveOptions["forkSession"]>>> = [];
+    const sourceHistory = [
+      claudeHistoryMessage({ type: "user", uuid: "turn-a", content: "first" }),
+      claudeHistoryMessage({ type: "assistant", uuid: "assistant-a", content: [] }),
+      claudeHistoryMessage({
+        type: "user",
+        uuid: "tool-result-a",
+        content: [{ type: "tool_result" }],
+      }),
+      claudeHistoryMessage({ type: "assistant", uuid: "assistant-a-final", content: [] }),
+      claudeHistoryMessage({ type: "user", uuid: "turn-b", content: "second" }),
+      claudeHistoryMessage({ type: "assistant", uuid: "assistant-b", content: [] }),
+      claudeHistoryMessage({
+        type: "user",
+        uuid: "tool-result-b",
+        content: [{ type: "tool_result" }],
+      }),
+      claudeHistoryMessage({ type: "assistant", uuid: "assistant-b-final", content: [] }),
+    ];
+    const forkHistory = sourceHistory.map((message) => ({
+      ...message,
+      uuid: `fork-${message.uuid}`,
+    }));
+    const harness = makeHarness({
+      forkSession: async (...args) => {
+        forkCalls.push(args);
+        return { sessionId: CLAUDE_FORK_SESSION_ID };
+      },
+      getSessionMessages: async (sessionId) =>
+        sessionId === CLAUDE_FORK_SESSION_ID ? forkHistory : sourceHistory,
+    });
+    const targetThreadId = ThreadId.make("thread-claude-sidechat");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      assert.equal(typeof adapter.forkThread, "function");
+      if (!adapter.forkThread) return;
+
+      const result = yield* adapter.forkThread({
+        sourceThreadId: THREAD_ID,
+        targetThreadId,
+        lastTurnId: TurnId.make("turn-b"),
+        cwd: "/tmp/claude-adapter-test",
+        runtimeMode: "full-access",
+        resumeCursor: {
+          threadId: THREAD_ID,
+          resume: CLAUDE_ORIGINAL_SESSION_ID,
+          resumeSessionAt: "assistant-b",
+          turnCount: 2,
+          turnStartMessageIds: ["turn-a", "turn-b"],
+        },
+      });
+
+      assert.deepEqual(forkCalls, [
+        [
+          CLAUDE_ORIGINAL_SESSION_ID,
+          {
+            dir: "/tmp/claude-adapter-test",
+            upToMessageId: "assistant-b-final",
+          },
+        ],
+      ]);
+      assert.equal(result.providerThreadId, CLAUDE_FORK_SESSION_ID);
+      assert.deepEqual(result.resumeCursor, {
+        threadId: targetThreadId,
+        sidechat: true,
+        resume: CLAUDE_FORK_SESSION_ID,
+        resumeSessionAt: "fork-assistant-b",
+        turnCount: 2,
+        turnStartMessageIds: ["fork-turn-a", "fork-turn-b"],
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects malformed Claude sidechat resumes instead of creating a blank native session", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const result = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          resumeCursor: { threadId: THREAD_ID, sidechat: true },
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return;
+      assert.equal(result.failure._tag, "ProviderAdapterValidationError");
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes a valid Claude sidechat cursor with native continuity", () => {
+    const harness = makeHarness();
+    const targetThreadId = ThreadId.make("thread-claude-sidechat-restart");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: targetThreadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          threadId: targetThreadId,
+          sidechat: true,
+          resume: CLAUDE_FORK_SESSION_ID,
+          resumeSessionAt: "fork-assistant-b",
+          turnCount: 2,
+          turnStartMessageIds: ["fork-turn-a", "fork-turn-b"],
+        },
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.resume, CLAUDE_FORK_SESSION_ID);
+      assert.deepEqual(session.resumeCursor, {
+        threadId: targetThreadId,
+        sidechat: true,
+        resume: CLAUDE_FORK_SESSION_ID,
+        resumeSessionAt: "fork-assistant-b",
+        turnCount: 2,
+        turnStartMessageIds: ["fork-turn-a", "fork-turn-b"],
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

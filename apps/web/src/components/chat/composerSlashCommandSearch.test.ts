@@ -10,6 +10,20 @@ import {
 describe("searchSlashCommandItems", () => {
   const claudeDriver = ProviderDriverKind.make("claudeAgent");
 
+  it("finds the built-in side-question command", () => {
+    const items = [
+      {
+        id: "slash:btw",
+        type: "slash-command",
+        command: "btw",
+        label: "/btw",
+        description: "Open a side question from the latest completed turn",
+      },
+    ] satisfies Array<Extract<ComposerCommandItem, { type: "slash-command" }>>;
+
+    expect(searchSlashCommandItems(items, "btw").map((item) => item.id)).toEqual(["slash:btw"]);
+  });
+
   it("moves exact provider command matches ahead of broader description matches", () => {
     const items = [
       {

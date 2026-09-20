@@ -15,6 +15,7 @@ import {
   expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   isCollapsedCursorAdjacentToInlineToken,
+  parseBtwCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
@@ -704,5 +705,26 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("parseBtwCommand", () => {
+  it.each([
+    ["/btw", ""],
+    [" /btw explain the retry path ", "explain the retry path"],
+    ["/btw explain `foo`", "explain `foo`"],
+    ["/btw explain the retry path\nwith more detail", "explain the retry path\nwith more detail"],
+  ])("parses a standalone %s command", (text, question) => {
+    expect(parseBtwCommand(text)).toEqual({ question });
+  });
+
+  it.each([
+    "main text /btw question",
+    "@src/app.ts /btw question",
+    "/btw/path.txt",
+    "```\n/btw question\n```",
+    "`/btw question`",
+  ])("does not intercept %s", (text) => {
+    expect(parseBtwCommand(text)).toBeNull();
   });
 });

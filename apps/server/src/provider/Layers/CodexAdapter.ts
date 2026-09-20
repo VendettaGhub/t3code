@@ -2261,6 +2261,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
           });
         }
+        if (input.resumeCursor !== undefined && !isCodexResumeCursorSchema(input.resumeCursor)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: "Persisted Codex resume cursor is invalid; refusing a blank native session.",
+          });
+        }
 
         const existing = sessions.get(input.threadId);
         if (existing && !existing.stopped) {
@@ -2281,7 +2288,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
-            ? { resumeCursor: input.resumeCursor }
+            ? {
+                resumeCursor: input.resumeCursor,
+                // A sidechat cursor is the only durable proof that this
+                // session owns inherited provider history.  Never turn a
+                // failed cold resume into a fresh blank thread.
+                ...(input.resumeCursor.sidechat === true
+                  ? { resumeMustSucceed: true }
+                  : {}),
+              }
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
@@ -2492,6 +2507,145 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         return started;
       }),
     );
+
+  const runTemporaryForkRuntime = (input: {
+    readonly targetThreadId: ThreadId;
+    readonly resumeCursor: unknown;
+    readonly cwd: string;
+    readonly runtimeMode: CodexSessionRuntimeOptions["runtimeMode"];
+    readonly model?: string;
+    readonly lastTurnId?: import("@t3tools/contracts").TurnId;
+    readonly operation: "fork" | "delete";
+  }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (!isCodexResumeCursorSchema(input.resumeCursor)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: input.operation === "fork" ? "forkThread" : "deleteThread",
+            issue: "Persisted Codex resume cursor is invalid; refusing a blank native session.",
+          });
+        }
+        const sourceProviderThreadId = input.resumeCursor.threadId;
+        const sessionScope = yield* Scope.make("sequential");
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: input.targetThreadId,
+          providerInstanceId: boundInstanceId,
+          cwd: input.cwd,
+          binaryPath: codexConfig.binaryPath,
+          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+          ...(options?.environment ? { environment: options.environment } : {}),
+          ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+          runtimeMode: input.runtimeMode,
+          ...(input.model ? { model: input.model } : {}),
+        }).pipe(
+          Effect.provideService(Scope.Scope, sessionScope),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.targetThreadId,
+                detail: cause.message,
+                cause,
+              }),
+          ),
+        );
+        const nativeFork = runtime.forkThreadFromProviderId;
+        const nativeDelete = runtime.deleteThreadByProviderId;
+        if (input.operation === "fork" && nativeFork === undefined) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "forkThread",
+            issue: "Codex runtime does not expose native thread fork.",
+          });
+        }
+        if (input.operation === "delete" && nativeDelete === undefined) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "deleteThread",
+            issue: "Codex runtime does not expose native thread deletion.",
+          });
+        }
+        if (input.operation === "fork") {
+          if (input.lastTurnId === undefined) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "forkThread",
+              issue: "Codex native fork requires a completed source turn.",
+            });
+          }
+          return yield* nativeFork!({
+            providerThreadId: sourceProviderThreadId,
+            lastTurnId: input.lastTurnId,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.targetThreadId,
+                  detail: cause.message,
+                  cause,
+                }),
+            ),
+            Effect.ensuring(runtime.close.pipe(Effect.ignore)),
+          );
+        }
+        return yield* nativeDelete!(sourceProviderThreadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.targetThreadId,
+                detail: cause.message,
+                cause,
+              }),
+          ),
+          Effect.ensuring(runtime.close.pipe(Effect.ignore)),
+        );
+      }),
+    );
+
+  const forkThread: NonNullable<CodexAdapterShape["forkThread"]> = (input) =>
+    runTemporaryForkRuntime({
+      targetThreadId: input.targetThreadId,
+      resumeCursor: input.resumeCursor,
+      cwd: input.cwd,
+      runtimeMode: input.runtimeMode,
+      ...(input.modelSelection?.instanceId === boundInstanceId
+        ? { model: input.modelSelection.model }
+        : {}),
+      lastTurnId: input.lastTurnId,
+      operation: "fork",
+    }).pipe(
+      Effect.flatMap((result) =>
+        result === undefined
+          ? Effect.fail(
+              new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "forkThread",
+                issue: "Codex native fork returned no target thread.",
+              }),
+            )
+          : Effect.succeed({
+              providerThreadId: result.threadId,
+              resumeCursor: result.resumeCursor,
+            }),
+      ),
+    );
+
+  const deleteThread: NonNullable<CodexAdapterShape["deleteThread"]> = (input) =>
+    runTemporaryForkRuntime({
+      targetThreadId: input.threadId,
+      resumeCursor: input.resumeCursor,
+      cwd: input.cwd,
+      runtimeMode: input.runtimeMode,
+      ...(input.modelSelection?.instanceId === boundInstanceId
+        ? { model: input.modelSelection.model }
+        : {}),
+      operation: "delete",
+    }).pipe(Effect.asVoid);
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
     input: ProviderSendTurnInput,
@@ -2723,8 +2877,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       promptlessTurnContinuation: true,
+      supportsThreadFork: true,
     },
     startSession,
+    forkThread,
+    deleteThread,
     sendTurn,
     compaction: { type: "native", start: compactThread },
     interruptTurn,

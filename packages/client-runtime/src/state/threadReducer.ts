@@ -122,6 +122,7 @@ export function applyThreadDetailEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          origin: event.payload.origin ?? null,
           branchPullRequest: null,
           latestTurn: null,
           createdAt: event.payload.createdAt,

@@ -45,6 +45,7 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import * as ProviderSessionDirectory from "../../provider/Services/ProviderSessionDirectory.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -214,6 +215,7 @@ const make = Effect.gen(function* () {
   const providerAuthService = yield* ProviderAuthService;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
+  const providerSessionDirectory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const gitWorkflow = yield* GitWorkflowService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -565,6 +567,38 @@ const make = Effect.gen(function* () {
     const thread = yield* resolveThreadShell(threadId);
     if (!thread) {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
+    }
+
+    // A sidechat's origin means its provider session is continuation state,
+    // not a new conversation.  Never let a missing directory row/cursor fall
+    // through to the generic blank-session startup path after a crash or
+    // partial cleanup.
+    if (thread.origin != null) {
+      const binding = yield* providerSessionDirectory.getBinding(threadId).pipe(
+        Effect.mapError(
+          () =>
+            new ProviderAdapterRequestError({
+              provider: providerErrorLabelFromInstanceHint({
+                modelSelectionInstanceId: String(thread.modelSelection.instanceId),
+              }),
+              method: "thread.turn.start",
+              detail: `Sidechat thread '${threadId}' has no readable persisted provider resume state. Refusing to start a blank session.`,
+            }),
+        ),
+      );
+      if (
+        Option.isNone(binding) ||
+        binding.value.providerInstanceId === undefined ||
+        binding.value.resumeCursor == null
+      ) {
+        return yield* new ProviderAdapterRequestError({
+          provider: providerErrorLabelFromInstanceHint({
+            modelSelectionInstanceId: String(thread.modelSelection.instanceId),
+          }),
+          method: "thread.turn.start",
+          detail: `Sidechat thread '${threadId}' is missing its persisted provider binding or resume cursor. Refusing to start a blank session. Retry the sidechat fork instead.`,
+        });
+      }
     }
 
     const desiredRuntimeMode = thread.runtimeMode;

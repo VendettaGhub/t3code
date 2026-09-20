@@ -23,6 +23,9 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
+export { ThreadOrigin } from "./threadOrigin.ts";
+export type { ThreadOrigin as ThreadOriginType } from "./threadOrigin.ts";
+import { ThreadOrigin } from "./threadOrigin.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   PullRequestActor,
@@ -781,6 +784,7 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   // Optional so payloads from pre-link servers still decode.
   pullRequests: Schema.Array(ThreadPullRequestLink).pipe(
@@ -868,6 +872,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.Array(ThreadPullRequestLink).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1104,6 +1109,7 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
   createdAt: IsoDateTime,
   historyImport: Schema.optional(Schema.Literal(true)),
 });
@@ -1736,6 +1742,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  origin: Schema.optional(Schema.NullOr(ThreadOrigin)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
