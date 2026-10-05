@@ -882,7 +882,7 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
 
       const steerCommandId = CommandId.make("runtime-delivery-intent-auto");
       const steerMessageId = MessageId.make("runtime-delivery-intent-auto");
-      yield* orchestrator.dispatch({
+      const steerCommand = {
         type: "message.dispatch",
         createdBy: "user",
         creationSource: "web",
@@ -893,8 +893,16 @@ it.layer(TestLayer)("OrchestrationV2LayerLive", (it) => {
         attachments: [],
         dispatchMode: { type: "start_immediately" },
         deliveryIntent: "auto",
-      });
+      } as const;
+      yield* orchestrator.dispatch(steerCommand);
+      const sequenceBeforeRetry = yield* orchestrator.getThreadEventSequence(threadId);
+      yield* orchestrator.dispatch(steerCommand);
+      assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequenceBeforeRetry);
       const steered = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(
+        steered.messages.filter((message) => message.id === steerMessageId),
+        1,
+      );
       assert.lengthOf(steered.runs, 1);
       assert.equal(
         steered.messages.find((message) => message.id === steerMessageId)?.runId,

@@ -6,6 +6,8 @@ import {
   collectLimitPools,
   cursorUsageWindowDetails,
   displayLimitWindows,
+  elapsedShare,
+  formatDuration,
   formatResetsIn,
   type LimitAccount,
   type LimitPool,
@@ -627,6 +629,273 @@ export function UsageLimitsPooled({
           </Button>
         </section>
       ))}
+      <LimitNotices notices={notices} />
+    </div>
+  );
+}
+
+/**
+ * One account's slice of a pooled window as a slim bar, drawn like the
+ * composer's original limit rows: fill is quota left, the hairline is where
+ * even spending would have put it. It still opens the account's detail, so the
+ * dense view loses none of the drilldown or the reset-credit action.
+ */
+function ThinPoolSegment({
+  account,
+  window,
+  reset,
+  color,
+  now,
+}: {
+  readonly account: LimitAccount;
+  readonly window: LimitPoolMember["window"];
+  readonly reset: LimitPoolWindow["resets"][number] | undefined;
+  readonly color: string;
+  readonly now: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const remaining = remainingPercent(window);
+  const elapsed = elapsedShare(window, now);
+  // The fill is quota left, so the even-spending mark is the time left.
+  const timeLeft = elapsed === null ? null : Math.round((1 - elapsed) * 100);
+  const resetsIn = formatResetsIn(window, now);
+  const credits = account.limits.resetCredits?.availableCount ?? 0;
+  const who =
+    account.displayName ??
+    (account.email
+      ? accountInitials(account.email)
+      : (getDriverOption(account.driver)?.label ?? String(account.driver)));
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        openOnHover
+        render={
+          <button
+            type="button"
+            aria-label={`${who}: ${remaining}% left${resetsIn ? `, ${resetsIn}` : ""}${
+              credits ? `, ${credits} reset ${credits === 1 ? "credit" : "credits"} banked` : ""
+            }`}
+            className="flex h-6 min-w-0 flex-1 cursor-pointer items-stretch gap-1 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring data-[popup-open]:ring-1 data-[popup-open]:ring-border"
+          >
+            <span className="relative min-w-0 flex-1">
+              <span aria-hidden className="absolute inset-x-0 inset-y-1.5 rounded-full bg-muted" />
+              {remaining > 0 ? (
+                <span
+                  aria-hidden
+                  className="absolute inset-y-1.5 left-0 rounded-full"
+                  style={{ width: `${remaining}%`, backgroundColor: color }}
+                />
+              ) : null}
+              {timeLeft !== null ? (
+                <span
+                  aria-hidden
+                  className="absolute inset-y-0.5 w-px -translate-x-1/2 bg-foreground/60"
+                  style={{ left: `${timeLeft}%` }}
+                />
+              ) : null}
+            </span>
+            <span
+              aria-hidden
+              className="flex w-4 shrink-0 items-center justify-center text-foreground"
+            >
+              {credits ? <TicketIcon className="size-3" /> : null}
+            </span>
+          </button>
+        }
+      />
+      {account.redeem ? (
+        <RedeemableSegmentPopup
+          account={account}
+          window={window}
+          reset={reset}
+          now={now}
+          redeemAt={account.redeem}
+          closePopover={() => setOpen(false)}
+        />
+      ) : (
+        <PopoverPopup side="top" sideOffset={6}>
+          <SegmentPopover
+            account={account}
+            window={window}
+            reset={reset}
+            now={now}
+            redeem={null}
+            onRedeem={() => {}}
+          />
+        </PopoverPopup>
+      )}
+    </Popover>
+  );
+}
+
+/**
+ * One pooled window as a single flat row: label and pooled percent left, the
+ * bar, then pace and the countdown. Accounts sit side by side inside the bar,
+ * so pooling stays visible without a card per window.
+ */
+function PooledWindowRow({
+  pool,
+  color,
+  now,
+}: {
+  readonly pool: LimitPoolWindow;
+  readonly color: string;
+  readonly now: number;
+}) {
+  const restores = new Map(pool.resets.map((reset) => [reset.member.account.key, reset]));
+  // Pooled windows have no single clock, so this is the earliest account reset.
+  const next = pool.resets[0];
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3">
+      <span className="flex min-w-0 basis-36 items-center gap-2 text-xs">
+        <span className="truncate text-muted-foreground">{pool.label}</span>
+        <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
+          {pool.remainingPercent}% left
+        </span>
+      </span>
+      <span className="flex min-w-24 flex-1 items-center gap-1">
+        {pool.members.map((member) => (
+          <ThinPoolSegment
+            key={member.account.key}
+            account={member.account}
+            window={member.window}
+            reset={restores.get(member.account.key)}
+            color={color}
+            now={now}
+          />
+        ))}
+      </span>
+      <span className="ms-auto flex shrink-0 items-center gap-2 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
+        {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
+        {next ? (
+          <span>
+            {next.at <= now ? "resets now" : `resets in ${formatDuration(next.at - now)}`}
+            {pool.members.length > 1 ? (
+              <span className="sr-only"> (earliest of {pool.members.length} accounts)</span>
+            ) : null}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Presentation-only split of per-provider groups into the composer's two
+ * columns: Claude left, Codex right, any other driver into whichever column is
+ * shorter (ties go left) so an unknown provider keeps a column instead of being
+ * dropped. Canonical collection order inside a column is untouched. Empty
+ * columns are dropped, so a single provider still fills the width.
+ */
+export function providerColumns<T>(
+  groups: readonly T[],
+  driverOf: (group: T) => string,
+): readonly (readonly T[])[] {
+  const left: T[] = [];
+  const right: T[] = [];
+  for (const group of groups) {
+    const driver = driverOf(group);
+    if (driver === "claude" || driver === "claudeAgent") left.push(group);
+    else if (driver === "codex") right.push(group);
+    else if (right.length < left.length) right.push(group);
+    else left.push(group);
+  }
+  return [left, right].filter((column) => column.length > 0);
+}
+
+/** `Claude · Pro` when one account is pooled, else how much is being pooled. */
+export function pooledAccountsSummary(accounts: readonly LimitAccount[]): string | null {
+  const [first] = accounts;
+  if (!first) return null;
+  if (accounts.length === 1) {
+    const name = first.displayName ?? getDriverOption(first.driver)?.label ?? String(first.driver);
+    return first.plan ? `${name} · ${first.plan}` : name;
+  }
+  const environments = new Set(
+    accounts.flatMap((account) => account.environments.map((entry) => entry.environmentId)),
+  );
+  return environments.size > 1
+    ? `${accounts.length} accounts · ${environments.size} environments`
+    : `${accounts.length} accounts`;
+}
+
+/** One provider's heading and its flat window rows, as one column entry. */
+function PooledProviderSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+  const label = getDriverOption(pool.driver)?.label ?? String(pool.driver);
+  return (
+    <section className="flex min-w-0 flex-col gap-0.5 [&:not(:first-child)]:border-t [&:not(:first-child)]:border-border/50 [&:not(:first-child)]:pt-2">
+      <h3 className="flex items-center justify-center gap-1.5 text-2xs font-medium text-muted-foreground">
+        <ProviderInstanceIcon
+          driverKind={pool.driver}
+          displayName={label}
+          indicatorBackground="var(--popover)"
+          className="size-4"
+          iconClassName="size-3 text-foreground/70"
+        />
+        {label}
+      </h3>
+      {pool.windows.map((window) => (
+        <PooledWindowRow
+          key={`${window.kind}:${window.id}`}
+          pool={window}
+          color={barColor(pool.driver)}
+          now={now}
+        />
+      ))}
+    </section>
+  );
+}
+
+/**
+ * The same pooled data as {@link UsageLimitsPooled} in the composer's row form:
+ * a thin provider heading and one flat row per window. Built for a short panel
+ * over the composer, where a card per window would not fit.
+ *
+ * Wide, the providers sit in two equal columns either side of a midpoint rule,
+ * aligned with the ring bar below. Narrow, the columns stack rather than squeeze
+ * the rows, which keeps every label, percentage and countdown readable.
+ */
+export function UsageLimitsPooledRows({
+  presentations,
+  now,
+}: {
+  readonly presentations: Parameters<typeof collectLimitAccounts>[0];
+  readonly now: number;
+}) {
+  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const notices = collectLimitNotices(presentations);
+  const columns = providerColumns(pools, (pool) => String(pool.driver));
+  const split = columns.length > 1;
+  return (
+    <div className="@container/pooled flex min-w-0 flex-col gap-2">
+      {pools.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No provider here reports subscription limits.
+        </p>
+      ) : null}
+      {columns.length > 0 ? (
+        <div
+          className={cn("grid min-w-0 gap-y-3", split && "@min-[26rem]/pooled:grid-cols-2")}
+          data-chat-usage-limit-columns={columns.length}
+        >
+          {columns.map((column, index) => (
+            <div
+              key={column[0]?.driver ?? index}
+              className={cn(
+                "flex min-w-0 flex-col justify-center gap-2",
+                split &&
+                  (index === 0
+                    ? "@min-[26rem]/pooled:pe-3"
+                    : "@min-[26rem]/pooled:border-l @min-[26rem]/pooled:border-border/50 @min-[26rem]/pooled:ps-3"),
+              )}
+            >
+              {column.map((pool) => (
+                <PooledProviderSection key={pool.driver} pool={pool} now={now} />
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <LimitNotices notices={notices} />
     </div>
   );

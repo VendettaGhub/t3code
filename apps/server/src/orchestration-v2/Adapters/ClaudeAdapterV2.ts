@@ -10,7 +10,6 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
   type CanUseTool,
-  forkSession as forkClaudeSession,
   type ForkSessionOptions,
   type ForkSessionResult,
   getSubagentMessages,
@@ -85,11 +84,16 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/unstable/process";
+import { forkClaudeSessionVerified } from "../../claudeForkV2.ts";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { resolveClaudeSdkExecutablePath } from "../../provider/Drivers/ClaudeExecutable.ts";
 import { planClaudeSkillDispatch } from "../../provider/Drivers/ClaudeSkillDispatch.ts";
-import { discoverClaudeSkills } from "../../provider/Drivers/ClaudeSkills.ts";
+import {
+  discoverClaudeSkills,
+  resolveClaudeConfigDirPath,
+} from "../../provider/Drivers/ClaudeSkills.ts";
 import { compileClaudeModelSelection } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
@@ -380,6 +384,8 @@ export class ClaudeAgentSdkQueryRunner extends Context.Service<
 export interface ClaudeAgentSdkSessionForkInput {
   readonly sessionId: string;
   readonly options: ForkSessionOptions;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly configDir: string;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
 }
@@ -594,11 +600,16 @@ export function makeClaudeAgentSdkProtocolLogger(input: {
 export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
   ClaudeAgentSdkQueryRunner,
   never,
-  Crypto.Crypto | ProviderEventLoggers.ProviderEventLoggers
+  | Crypto.Crypto
+  | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | ProviderEventLoggers.ProviderEventLoggers
 > = Layer.effect(
   ClaudeAgentSdkQueryRunner,
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
+    const path = yield* Path.Path;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
 
     return ClaudeAgentSdkQueryRunner.of({
@@ -744,10 +755,20 @@ export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
             options: input.options,
           },
         });
-        const result = yield* Effect.tryPromise({
-          try: () => forkClaudeSession(input.sessionId, input.options),
-          catch: (cause) => queryRunnerError(cause, "forkSession"),
-        });
+        const result = yield* forkClaudeSessionVerified({
+          sessionId: input.sessionId,
+          dir: input.options.dir ?? input.configDir,
+          configDir: input.configDir,
+          environment: input.environment,
+          ...(input.options.upToMessageId === undefined
+            ? {}
+            : { upToMessageId: input.options.upToMessageId }),
+        }).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
+        );
         yield* logProtocolEvent({
           direction: "incoming",
           stage: "decoded",
@@ -1124,11 +1145,11 @@ const getNativeConversationHeadId = Effect.fnUntraced(function* (
 
 const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpToMessageId")(
   function* (input: ProviderAdapter.ProviderAdapterV2ForkThreadInput) {
-    if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
+    if (input.providerTurnId === undefined) {
       return undefined;
     }
 
-    const sourceTurns = input.sourceProviderTurns
+    const sourceTurns = (input.sourceProviderTurns ?? [])
       .filter((turn) => turn.providerThreadId === input.sourceProviderThread.id)
       .toSorted((left, right) => left.ordinal - right.ordinal);
     const boundaryIndex = sourceTurns.findIndex((turn) => turn.id === input.providerTurnId);
@@ -1147,13 +1168,6 @@ const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpT
       !isSyntheticClaudeTurnId(boundaryNativeId)
     ) {
       return boundaryNativeId;
-    }
-
-    const terminalTurnsAfterBoundary = sourceTurns
-      .slice(boundaryIndex + 1)
-      .filter(isTerminalProviderTurn);
-    if (terminalTurnsAfterBoundary.length === 0) {
-      return undefined;
     }
 
     return yield* new ProviderAdapter.ProviderAdapterForkThreadError({
@@ -7707,6 +7721,12 @@ export function makeClaudeAdapterV2(
               const forked = yield* queryRunner.forkSession({
                 sessionId: sourceNativeThreadId,
                 options: forkOptions,
+                environment: adapterOptions.environment,
+                configDir: yield* resolveClaudeConfigDirPath(
+                  adapterOptions.settings,
+                  adapterOptions.environment,
+                  input.runtimePolicy.cwd ?? undefined,
+                ).pipe(Effect.provideService(Path.Path, adapterOptions.path)),
                 threadId: forkInput.targetThreadId,
                 providerSessionId: input.providerSessionId,
               });

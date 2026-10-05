@@ -1061,4 +1061,50 @@ describe("rightPanelStore", () => {
       ),
     ).toEqual(["terminal:term-1", "browser:tab-b", "browser:tab-c"]);
   });
+
+  it("keeps sidechats to one surface per thread and scopes it to that thread", () => {
+    // The sidechat list is server-owned and unlimited; a tab per sidechat
+    // would turn the tab bar into the list, so the surface is a singleton
+    // index/detail pane.
+    useRightPanelStore.getState().open(refA, "sidechats");
+    useRightPanelStore.getState().open(refA, "sidechats");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces).toEqual([{ id: "sidechats", kind: "sidechats" }]);
+    expect(state.activeSurfaceId).toBe("sidechats");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      "sidechats",
+    );
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+  });
+
+  it("toggling sidechats hides the panel instead of stacking another surface", () => {
+    useRightPanelStore.getState().toggle(refA, "sidechats");
+    useRightPanelStore.getState().toggle(refA, "sidechats");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.isOpen).toBe(false);
+    expect(state.surfaces).toEqual([{ id: "sidechats", kind: "sidechats" }]);
+  });
+
+  it("persists the selected sidechat on the singleton surface", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "sidechats");
+    store.selectSidechat(refA, "sidechat-1");
+
+    const persisted = JSON.parse(
+      JSON.stringify({ byThreadKey: useRightPanelStore.getState().byThreadKey }),
+    );
+    useRightPanelStore.setState(migratePersistedRightPanelState(persisted));
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([{ id: "sidechats", kind: "sidechats", selectedSidechatId: "sidechat-1" }]);
+
+    useRightPanelStore.getState().selectSidechat(refA, null);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([{ id: "sidechats", kind: "sidechats" }]);
+  });
 });

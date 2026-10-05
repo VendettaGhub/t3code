@@ -18,6 +18,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ThreadId,
+  TrimmedNonEmptyString,
   type ProjectScript,
 } from "@t3tools/contracts";
 import {
@@ -25,7 +26,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Alert, Platform, ScrollView, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useConnectionsReady } from "../../state/workspace";
 import { useEnvironmentShellReadiness } from "../../state/shell";
@@ -36,6 +37,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
 import { EmptyState } from "../../components/EmptyState";
+import { AppText as Text } from "../../components/AppText";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
@@ -62,6 +64,7 @@ import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen, type ThreadDetailScreenProps } from "./ThreadDetailScreen";
 import { GitOverviewSheet } from "./git/GitOverviewSheet";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { sidechatEnvironment } from "../../state/sidechat";
 import { useSelectedThreadGitActions } from "../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-state";
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
@@ -83,6 +86,23 @@ import {
   type ThreadInspectorMode,
 } from "./thread-inspector-content-stack";
 import { threadRouteIsHydrating } from "./thread-route-hydration";
+import { appendSidechatExcerptToMainDraft } from "../sidechat/appendSidechatExcerpt";
+import { armSideQuestionSend, consumeSideQuestionSend } from "../sidechat/sidechatCommand";
+import {
+  canCompleteSideQuestion,
+  canStartSidechat,
+  formatSidechatOrigin,
+  shouldTransferSideQuestionDraft,
+} from "../sidechat/sidechatModel";
+import { uuidv4 } from "../../lib/uuid";
+import { supportsNativeSidechat } from "@t3tools/client-runtime/state/models";
+import type { MessageId } from "@t3tools/contracts";
+import {
+  getComposerDraftSnapshot,
+  clearComposerDraftContent,
+  mergeComposerDraftContent,
+} from "../../state/use-composer-drafts";
+import { useThreadShell } from "../../state/entities";
 
 function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
@@ -97,10 +117,15 @@ function ThreadHeader(
 ) {
   const navigation = useNavigation();
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
-  const { onOpenTerminal, onMergeBack } = props.gitControls;
+  const { onOpenSideQuestion, onOpenSidechats, onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
   const androidHeaderActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
     const actions: ScreenHeaderAction[] = [];
+    actions.push({
+      accessibilityLabel: "Start side question",
+      icon: "text.bubble",
+      onPress: onOpenSideQuestion,
+    });
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: "Return to chat",
@@ -129,6 +154,11 @@ function ThreadHeader(
       icon: "point.topleft.down.curvedto.point.bottomright.up",
       onPress: props.onOpenGitInspector,
     });
+    actions.push({
+      accessibilityLabel: "Side question history",
+      icon: "clock",
+      onPress: onOpenSidechats,
+    });
     if (onMergeBack) {
       actions.push({
         accessibilityLabel: "Merge back to source",
@@ -148,6 +178,8 @@ function ThreadHeader(
     props.onReturnToThread,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
+    onOpenSideQuestion,
+    onOpenSidechats,
   ]);
 
   return (
@@ -215,6 +247,7 @@ function OpeningThreadLoadingScreen() {
 type ThreadRouteScreenRouteProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
+  readonly sidechatId?: string;
 }>;
 
 interface ThreadRouteScreenProps extends ThreadRouteScreenRouteProps {
@@ -254,7 +287,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const { selectedThread } = useThreadSelection();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
-  const threadIdRaw = firstRouteParam(params.threadId);
+  const threadIdRaw = firstRouteParam(params.sidechatId) ?? firstRouteParam(params.threadId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
   const routeEnvironmentShellState = useEnvironmentShellReadiness(environmentId);
@@ -327,6 +360,15 @@ function ThreadRouteContent(
   const { fileInspector, layout, panes, showAuxiliaryPane, toggleAuxiliaryPane } =
     useAdaptiveWorkspaceLayout();
   const { connectionState } = useRemoteConnectionStatus();
+  const params = props.route.params;
+  const environmentIdRaw = firstRouteParam(params.environmentId);
+  const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
+  const routeThreadId = firstRouteParam(params.sidechatId) ?? firstRouteParam(params.threadId);
+  const sideQuestionRouteKey =
+    environmentIdRaw !== null && routeThreadId !== null
+      ? `${environmentIdRaw}:${routeThreadId}`
+      : null;
+  const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
   const { onReconnectEnvironment } = useRemoteConnections();
   const {
     selectedThread,
@@ -334,10 +376,75 @@ function ThreadRouteContent(
     selectedThreadProject,
     selectedEnvironmentConnection,
   } = useThreadSelection();
+  const sidechatParent = useThreadShell(
+    selectedThread?.origin
+      ? {
+          environmentId: selectedThread.environmentId,
+          threadId: selectedThread.origin.threadId,
+        }
+      : null,
+  );
+  const sidechatSource = selectedThread?.origin ? sidechatParent : selectedThread;
+  const sidechatSourceProjection = useEnvironmentQuery(
+    sidechatSource
+      ? sidechatEnvironment.source({
+          environmentId: sidechatSource.environmentId,
+          input: { threadId: sidechatSource.id },
+        })
+      : null,
+  );
+  useEffect(() => {
+    sidechatSourceProjection.refresh();
+  }, [
+    sidechatSourceProjection.refresh,
+    sidechatSource?.latestRun?.completedAt,
+    sidechatSource?.providerInstanceId,
+  ]);
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
+  const mountedRef = useRef(false);
+  const sideQuestionRouteGenerationRef = useRef(0);
+  const sideQuestionRouteKeyRef = useRef<string | null>(null);
+  // Keep this synchronous: a route can be reused for Aâ†’Bâ†’A before passive
+  // effects run, and every destination still invalidates an old fork.
+  if (sideQuestionRouteKeyRef.current !== sideQuestionRouteKey) {
+    sideQuestionRouteKeyRef.current = sideQuestionRouteKey;
+    sideQuestionRouteGenerationRef.current += 1;
+  }
+  const sideQuestionOwnerKey =
+    selectedThread === null
+      ? null
+      : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
+  const sideQuestionOwnerRef = useRef<string | null>(null);
+  const navigation = useNavigation();
+  sideQuestionOwnerRef.current = sideQuestionOwnerKey;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      sideQuestionRouteGenerationRef.current += 1;
+      return () => {
+        sideQuestionRouteGenerationRef.current += 1;
+      };
+    }, []),
+  );
+  useEffect(() => {
+    if (selectedThread === null || !navigation.isFocused()) return;
+    const key = scopedThreadKey(selectedThread.environmentId, selectedThread.id);
+    if (composer.draftMessage.trim().length === 0 && composer.draftAttachments.length === 0) return;
+    const draft = JSON.stringify([
+      composer.draftMessage,
+      composer.draftAttachments.map(({ id }) => id),
+    ]);
+    if (!consumeSideQuestionSend(key, draft)) return;
+    void composer.onSendMessage().catch(() => undefined);
+  }, [composer, navigation, selectedThread]);
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
@@ -366,7 +473,6 @@ function ThreadRouteContent(
       },
     };
   }, [loadEarlierHistory, selectedThread, selectedThreadDetailState.history]);
-  const navigation = useNavigation();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
   const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
   const mergeBackRun =
@@ -401,10 +507,170 @@ function ThreadRouteContent(
       mergeBackBusyRef.current = false;
     }
   }, [mergeBack, mergeBackRun, mergeBackTargetThreadId, navigation, selectedThread]);
-  const params = props.route.params;
-  const environmentIdRaw = firstRouteParam(params.environmentId);
-  const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
-  const threadId = firstRouteParam(params.threadId);
+  const forkThread = useAtomCommand(sidechatEnvironment.fork, "Start side question");
+  const sideQuestionRequestRef = useRef<{
+    readonly sourceThreadId: string;
+    readonly requestId: string;
+  } | null>(null);
+  const sideQuestionStartingRef = useRef(false);
+  const appendSidechatMessage = useCallback(
+    (messageId: MessageId, text: string) => {
+      if (!selectedThread?.origin || sidechatParent === null) return;
+      const inserted = appendSidechatExcerptToMainDraft({
+        environmentId: selectedThread.environmentId,
+        mainThreadId: selectedThread.origin.threadId,
+        sidechatId: selectedThread.id,
+        sourceMessageId: messageId,
+        sidechatTitle: selectedThread.title,
+        excerpt: text,
+      });
+      if (!inserted) {
+        Alert.alert(
+          "Could not add message",
+          "Remove some context from the main draft and try again.",
+        );
+        return;
+      }
+      void navigation.navigate("Thread", {
+        environmentId: String(selectedThread.environmentId),
+        threadId: String(selectedThread.origin.threadId),
+      });
+    },
+    [navigation, selectedThread, sidechatParent],
+  );
+  const openSideQuestion = useCallback(
+    async (question: string | null) => {
+      const sourceThread = selectedThread?.origin ? sidechatParent : selectedThread;
+      if (sourceThread === null || sourceThread === undefined) return;
+      if (sideQuestionStartingRef.current) return;
+      const draftOwnerThread = selectedThread;
+      if (draftOwnerThread === null) return;
+
+      const canStart = canStartSidechat({
+        parent: {
+          latestTurn: sourceThread.latestRun ? { state: sourceThread.latestRun.status } : null,
+          activeTurnId: sourceThread.runtime?.activeRunId ?? null,
+          hasPendingApprovals: sourceThread.hasPendingApprovals,
+          hasPendingUserInput: sourceThread.hasPendingUserInput,
+        },
+        supportsThreadFork: supportsNativeSidechat(sidechatSourceProjection.data),
+      });
+      if (!canStart.allowed) {
+        Alert.alert("Could not start side question", canStart.reason);
+        return;
+      }
+
+      sideQuestionStartingRef.current = true;
+      const requestGeneration = sideQuestionRouteGenerationRef.current;
+      const draftOwnerKey = scopedThreadKey(draftOwnerThread.environmentId, draftOwnerThread.id);
+      const sourceThreadId = String(sourceThread.id);
+      const draftOwnerKeyString = String(draftOwnerKey);
+      const sourceDraft = getComposerDraftSnapshot(draftOwnerKeyString);
+      const currentRequest = sideQuestionRequestRef.current;
+      const requestId =
+        currentRequest?.sourceThreadId === sourceThreadId
+          ? currentRequest.requestId
+          : TrimmedNonEmptyString.make(uuidv4());
+      sideQuestionRequestRef.current = { sourceThreadId, requestId };
+      try {
+        const result = await forkThread({
+          environmentId: sourceThread.environmentId,
+          input: { sourceThreadId: sourceThread.id, requestId },
+        });
+        if (result._tag !== "Success") {
+          Alert.alert(
+            "Could not start side question",
+            "The source thread could not be forked from a completed checkpoint.",
+          );
+          return;
+        }
+        // Retire a completed request before checking route ownership: a stale
+        // screen must not make a later Aâ†’Bâ†’A launch reuse the old fork.
+        sideQuestionRequestRef.current = null;
+        const ownsCompletion = () =>
+          canCompleteSideQuestion({
+            mounted: mountedRef.current,
+            focused: navigation.isFocused(),
+            currentOwnerKey: sideQuestionOwnerRef.current,
+            ownerKey: draftOwnerKeyString,
+            currentGeneration: sideQuestionRouteGenerationRef.current,
+            requestGeneration,
+          });
+        if (!ownsCompletion()) return;
+
+        const targetThreadKey = scopedThreadKey(
+          sourceThread.environmentId,
+          result.value.targetThreadId,
+        );
+        if (question !== null && shouldTransferSideQuestionDraft(question)) {
+          const merged = await mergeComposerDraftContent(targetThreadKey, {
+            text: question,
+            context: sourceDraft.context,
+            attachments: sourceDraft.attachments,
+          });
+          if (!ownsCompletion()) {
+            // Keep the recoverable child draft: it may already contain edits
+            // made through History while persistence was pending.
+            return;
+          }
+          if (merged.skippedAttachmentCount > 0) {
+            Alert.alert(
+              "Could not transfer all attachments",
+              "Nothing was sent. Your original draft is unchanged; the partial side question is available in History.",
+            );
+            return;
+          }
+          const latestSourceDraft = getComposerDraftSnapshot(draftOwnerKeyString);
+          if (
+            latestSourceDraft.text === sourceDraft.text &&
+            JSON.stringify(latestSourceDraft.context) === JSON.stringify(sourceDraft.context) &&
+            latestSourceDraft.attachments.length === sourceDraft.attachments.length &&
+            latestSourceDraft.attachments.every(
+              (attachment, index) => attachment.id === sourceDraft.attachments[index]?.id,
+            )
+          ) {
+            clearComposerDraftContent(draftOwnerKeyString, { deferAttachmentCleanup: true });
+          }
+        }
+        if (!ownsCompletion()) return;
+        if (question !== null) {
+          const draft = getComposerDraftSnapshot(String(targetThreadKey));
+          armSideQuestionSend(
+            targetThreadKey,
+            JSON.stringify([draft.text, draft.attachments.map(({ id }) => id)]),
+          );
+        }
+        const sidechatRoute = {
+          environmentId: String(sourceThread.environmentId),
+          threadId: sourceThreadId,
+          sidechatId: String(result.value.targetThreadId),
+        };
+        // Keep the main route underneath a fresh child; replace only when a
+        // sidechat is starting another child so Back never resumes the old branch.
+        if (selectedThread?.origin) {
+          navigation.dispatch(StackActions.replace("ThreadSidechat", sidechatRoute));
+        } else {
+          void navigation.navigate("ThreadSidechat", sidechatRoute);
+        }
+      } catch (error) {
+        Alert.alert(
+          "Could not start side question",
+          error instanceof Error ? error.message : String(error),
+        );
+      } finally {
+        sideQuestionStartingRef.current = false;
+      }
+    },
+    [
+      forkThread,
+      navigation,
+      routeEnvironmentRuntime?.serverConfig?.providers,
+      selectedThread,
+      sidechatParent,
+      sidechatSourceProjection.data,
+    ],
+  );
+  const threadId = routeThreadId;
   const routeThreadIdentity =
     environmentIdRaw !== null && threadId !== null ? `${environmentIdRaw}:${threadId}` : null;
   const [inspectorSelection, setInspectorSelection] = useState<ThreadInspectorSelection | null>(
@@ -465,7 +731,6 @@ function ThreadRouteContent(
       };
     }, [props.renderInspector]),
   );
-  const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
   const routeConnectionState =
     routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
   const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
@@ -830,6 +1095,15 @@ function ThreadRouteContent(
     onOpenTerminal: handleOpenTerminal,
     onOpenNewTerminal: handleOpenNewTerminal,
     onRunProjectScript: handleRunProjectScript,
+    onOpenSidechats: () => {
+      const historySource = selectedThread?.origin ? sidechatParent : selectedThread;
+      if (!historySource) return;
+      void navigation.navigate("ThreadSidechats", {
+        environmentId: String(historySource.environmentId),
+        threadId: String(historySource.id),
+      });
+    },
+    onOpenSideQuestion: () => void openSideQuestion(null),
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,
   };
@@ -985,6 +1259,35 @@ function ThreadRouteContent(
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = () => (
     <>
+      {selectedThread.origin ? (
+        <View className="border-b border-border bg-screen px-4 py-2.5">
+          <Text className="font-sans text-xs text-foreground-muted">
+            {formatSidechatOrigin(selectedThread.origin)}
+          </Text>
+          <Text className="mt-1 font-sans text-xs text-foreground-muted">
+            Shared workspace files can conflict during concurrent edits; file restore requires an
+            isolated worktree.
+          </Text>
+          <Pressable
+            accessibilityLabel="Open source thread"
+            accessibilityRole="button"
+            disabled={sidechatParent === null}
+            onPress={() =>
+              sidechatParent
+                ? void navigation.navigate("Thread", {
+                    environmentId: String(sidechatParent.environmentId),
+                    threadId: String(sidechatParent.id),
+                  })
+                : undefined
+            }
+            className="mt-1 self-start active:opacity-70 disabled:opacity-45"
+          >
+            <Text className="font-t3-bold text-xs text-primary">
+              {sidechatParent ? "Open source thread" : "Source thread unavailable"}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 
       <View className="flex-1 bg-screen android:overflow-hidden android:rounded-t-[28px] android:bg-thread-canvas">
@@ -996,6 +1299,9 @@ function ThreadRouteContent(
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           feedbackSubmissions={composer.feedbackSubmissions}
           onDismissFeedback={composer.dismissFeedback}
+          onAppendSidechatMessage={
+            selectedThread.origin && sidechatParent !== null ? appendSidechatMessage : undefined
+          }
           selectedThreadFeed={composer.selectedThreadFeed}
           activityRun={composer.selectedThreadActivityRun}
           activeWorkStartedAt={
@@ -1067,6 +1373,7 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
           onSendMessage={composer.onSendMessage}
+          onOpenSideQuestion={openSideQuestion}
           onReconnectEnvironment={handleReconnectEnvironment}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

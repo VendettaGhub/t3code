@@ -43,6 +43,7 @@ import {
   dismissThreadUserInput,
   editQueuedRun,
   forkThreadFromRun,
+  forkSidechat,
   interruptThreadTurn,
   mergeThreadBack,
   promoteQueuedRun,
@@ -76,6 +77,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly projects: ProjectMutation[];
   readonly launches?: OrchestrationV2ThreadLaunchInput[];
   readonly projection?: OrchestrationV2ThreadProjection;
+  readonly projections?: Readonly<Record<string, OrchestrationV2ThreadProjection>>;
   readonly projectionRequests?: ThreadId[];
   readonly advertiseServerResolvedCommandContext?: boolean;
 }) {
@@ -90,7 +92,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
     }) =>
       Effect.sync(() => {
         input.projectionRequests?.push(requestInput.threadId);
-        return input.projection ?? v2Projection;
+        return input.projections?.[requestInput.threadId] ?? input.projection ?? v2Projection;
       }),
     [ORCHESTRATION_V2_WS_METHODS.launchThread]: (launchInput: OrchestrationV2ThreadLaunchInput) =>
       Effect.sync(() => {
@@ -434,6 +436,102 @@ describe("V2 environment commands", () => {
         });
       }
       expect(projectionRequests).toEqual([]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect.each([false, true, "wrong-source"] as const)(
+    "sidechats retain the exact persisted origin and stable request (retry: %s)",
+    (retry) =>
+      Effect.gen(function* () {
+        const run = {
+          id: RunId.make("completed-run"),
+          threadId: v2ThreadId,
+          ordinal: 1,
+          providerInstanceId: v2Projection.thread.providerInstanceId,
+          modelSelection: v2Projection.thread.modelSelection,
+          providerThreadId: null,
+          userMessageId: MessageId.make("source-message"),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "completed" as const,
+          requestedAt: v2Now,
+          startedAt: v2Now,
+          completedAt: v2Now,
+          checkpointId: null,
+          contextHandoffId: null,
+        };
+        const requestId = "8740bef2-13d1-4e6c-851d-7d7a3c0dc3d1";
+        const persistedRunId = retry === true ? RunId.make("previously-forked-run") : run.id;
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          projections: {
+            [requestId]: {
+              ...v2Projection,
+              thread: {
+                ...v2Projection.thread,
+                id: ThreadId.make(requestId),
+                sidechat: true,
+                forkedFrom: {
+                  type: "run",
+                  threadId: retry === "wrong-source" ? ThreadId.make("other-source") : v2ThreadId,
+                  runId: persistedRunId,
+                },
+              },
+            },
+          },
+          projection: {
+            ...v2Projection,
+            runs: [
+              run,
+              {
+                ...run,
+                id: RunId.make("active-run"),
+                ordinal: 2,
+                status: "running",
+                completedAt: null,
+              },
+            ],
+          },
+        });
+        const operation = forkSidechat({ sourceThreadId: v2ThreadId, requestId }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        if (retry === "wrong-source") {
+          expect((yield* Effect.exit(operation))._tag).toBe("Failure");
+          return;
+        }
+        const result = yield* operation;
+        expect(commands).toEqual([
+          {
+            type: "thread.fork",
+            commandId: requestId,
+            targetThreadId: requestId,
+            sourceThreadId: v2ThreadId,
+            sourcePoint: { type: "run", runId: run.id },
+            createdBy: "user",
+            creationSource: "web",
+            title: "Side question",
+            sidechat: true,
+          },
+        ]);
+        expect(result.origin).toMatchObject({ threadId: v2ThreadId, runId: persistedRunId });
+        expect(result.origin).not.toHaveProperty("turnId");
+        expect(result.origin.createdAt).toBe("2026-06-20T00:00:00.000Z");
+      }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("sidechats refuse a source without a completed run without creating a target", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const result = yield* forkSidechat({ sourceThreadId: v2ThreadId, requestId: "request" }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+      );
+      expect(result._tag).toBe("Failure");
+      expect(commands).toEqual([]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 

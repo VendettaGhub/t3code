@@ -31,6 +31,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { ThreadSearchMatchExcerpt } from "../threads/thread-search-match";
+import { isMainThread } from "../threads/threadListV2";
 import {
   filterCommandPaletteItems,
   nextPaletteIndex,
@@ -317,7 +318,7 @@ export function CommandPalette(props: {
         }),
     }));
     const threadItems: CommandPaletteItem[] = threads
-      .filter((thread) => thread.archivedAt === null)
+      .filter((thread) => isMainThread(thread) && thread.archivedAt === null)
       .sort((left, right) =>
         (right.latestUserMessageAt ?? right.updatedAt).localeCompare(
           left.latestUserMessageAt ?? left.updatedAt,

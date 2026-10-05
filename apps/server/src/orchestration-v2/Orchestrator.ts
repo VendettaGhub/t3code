@@ -3399,6 +3399,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+    if (command.sidechat === true) {
+      const sourceAdapter = yield* providerAdapters
+        .get(sourceRun.providerInstanceId)
+        .pipe(mapDispatchError(command));
+      const capabilities = yield* sourceAdapter.getCapabilities().pipe(mapDispatchError(command));
+      const strategy = yield* commandPolicy
+        .decideForkExecution({
+          commandId: command.commandId,
+          threadId: command.sourceThreadId,
+          providerInstanceId: sourceRun.providerInstanceId,
+          capabilities,
+          sameProvider:
+            sourceRun.providerInstanceId === sourceProjection.thread.modelSelection.instanceId,
+          hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
+          sourceRunStatus: sourceRun.status,
+          fromSpecificTurn: true,
+        })
+        .pipe(mapDispatchError(command));
+      const sourceProviderTurn = providerTurnForRun(sourceProjection, sourceRun);
+      if (
+        strategy !== "native_fork" ||
+        sourceProviderTurn === undefined ||
+        sourceProviderTurn.providerThreadId !== sourceProviderThread?.id
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Sidechat requires an exact native fork; portable context or a missing turn boundary is not permitted.",
+        });
+      }
+    }
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
     const transferId = yield* mapDispatchError(command)(
@@ -3417,6 +3449,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         transferId,
         targetThreadId: command.targetThreadId,
         ...(command.title === undefined ? {} : { title: command.title }),
+        ...(command.sidechat === undefined ? {} : { sidechat: command.sidechat }),
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         createdAt: now,
@@ -5404,16 +5437,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sourceProjection === null || sourceRun === null
           ? undefined
           : providerThreadForRun(sourceProjection, sourceRun);
-      const sourceProviderTurnId =
-        sourceProjection === null || sourceRun === null || sourceRun.activeAttemptId === null
+      const sourceProviderTurn =
+        sourceProjection === null || sourceRun === null
           ? undefined
-          : (sourceProjection.providerTurns.find(
-              (candidate) => candidate.runAttemptId === sourceRun.activeAttemptId,
-            )?.id ??
-            sourceProjection.attempts.find(
-              (candidate) => candidate.id === sourceRun.activeAttemptId,
-            )?.providerTurnId ??
-            undefined);
+          : providerTurnForRun(sourceProjection, sourceRun);
+      const sourceProviderTurnId = sourceProviderTurn?.id;
       if (pendingForkTransfer !== undefined) {
         if (sourceRun === null || sourceProviderThread === undefined) {
           return yield* new OrchestratorDispatchError({
@@ -5498,6 +5526,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
       const canResolveForkNatively = forkExecution === "native_fork";
       const requiresPortableFork = forkExecution === "portable_context";
+      if (
+        pendingForkTransfer !== undefined &&
+        projection.thread.sidechat === true &&
+        (!canResolveForkNatively ||
+          sourceProviderTurnId === undefined ||
+          sourceProviderTurn?.providerThreadId !== sourceProviderThread?.id)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Sidechat requires an exact native fork; portable context or a missing turn boundary is not permitted.",
+        });
+      }
 
       if (canResolveForkNatively) {
         yield* enforceCommandPolicy(command)(

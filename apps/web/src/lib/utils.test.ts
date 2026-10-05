@@ -1,5 +1,16 @@
 import { describe, assert, it } from "vite-plus/test";
-import { getLocalFileManagerName, isWindowsPlatform } from "./utils";
+import { cn, getLocalFileManagerName, isWindowsPlatform } from "./utils";
+
+it("preserves both integrated composer font sizes beside text colors", () => {
+  assert.strictEqual(
+    cn("text-sidechat", "text-muted-foreground"),
+    "text-sidechat text-muted-foreground",
+  );
+  assert.strictEqual(
+    cn("text-usage-ring", "text-muted-foreground"),
+    "text-usage-ring text-muted-foreground",
+  );
+});
 
 describe("getLocalFileManagerName", () => {
   it.each([

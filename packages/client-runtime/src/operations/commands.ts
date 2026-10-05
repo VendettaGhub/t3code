@@ -22,13 +22,14 @@ import {
   type RunId,
   type RuntimeMode,
   type RuntimeRequestId,
-  type ThreadId,
+  ThreadId,
   type ThreadEnvMode,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 import { getInitialServerConfig, request } from "../rpc/client.ts";
@@ -211,6 +212,7 @@ export interface RevertThreadCheckpointInput extends ThreadCommandInput {
 export type StopThreadSessionInput = ThreadCommandInput;
 
 export interface ForkThreadFromRunInput extends CommandMetadata {
+  readonly sidechat?: true;
   readonly sourceThreadId: ThreadId;
   readonly targetThreadId: ThreadId;
   readonly runId: RunId;
@@ -923,8 +925,54 @@ export const forkThreadFromRun = Effect.fn("EnvironmentCommands.forkThreadFromRu
     sourceThreadId: input.sourceThreadId,
     targetThreadId: input.targetThreadId,
     sourcePoint: { type: "run", runId: input.runId },
+    ...(input.sidechat ? { sidechat: true as const } : {}),
     ...(input.title === undefined ? {} : { title: input.title }),
   });
+});
+
+export interface SidechatForkInput {
+  readonly creationSource?: OrchestrationV2CreationSource;
+  readonly sourceThreadId: ThreadId;
+  readonly requestId: string;
+}
+
+export const forkSidechat = Effect.fn("EnvironmentCommands.forkSidechat")(function* (
+  input: SidechatForkInput,
+) {
+  const projection = yield* getProjection(input.sourceThreadId);
+  const run = projection.runs.findLast((candidate) => candidate.status === "completed");
+  if (!run)
+    return yield* Effect.fail(new Error("Complete a source turn before starting a side question."));
+  const targetThreadId = ThreadId.make(input.requestId);
+  yield* forkThreadFromRun({
+    commandId: CommandId.make(input.requestId),
+    creationSource: input.creationSource ?? "web",
+    sourceThreadId: input.sourceThreadId,
+    targetThreadId,
+    runId: run.id,
+    title: "Side question",
+    sidechat: true,
+  });
+  // A deduplicated retry can return an earlier fork after the source advanced.
+  // Provenance belongs to the durable target, never to this client's clock.
+  const target = (yield* getProjection(targetThreadId)).thread;
+  const origin = target.forkedFrom;
+  if (
+    target.id !== targetThreadId ||
+    target.sidechat !== true ||
+    origin?.type !== "run" ||
+    origin.threadId !== input.sourceThreadId
+  ) {
+    return yield* Effect.fail(new Error("The sidechat's exact source could not be verified."));
+  }
+  return {
+    targetThreadId,
+    origin: {
+      threadId: origin.threadId,
+      runId: origin.runId,
+      createdAt: DateTime.formatIso(target.createdAt),
+    },
+  };
 });
 
 export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(function* (

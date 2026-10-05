@@ -2135,6 +2135,8 @@ function PullRequestsRouteView() {
             onAddFiles={() => undefined}
             onAddPullRequest={() => undefined}
             onAddPullRequests={() => undefined}
+            onAddSidechats={() => undefined}
+            sidechatsAvailable={false}
             onAddDevice={() => undefined}
             browserAvailable={false}
             terminalAvailable={false}

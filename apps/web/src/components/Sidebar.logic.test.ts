@@ -1,6 +1,7 @@
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
+import { TurnId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import * as Cause from "effect/Cause";
@@ -22,6 +23,7 @@ import {
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
+  isMainSidebarThread,
   isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
@@ -143,6 +145,26 @@ describe("resolveSidebarThreadSection", () => {
     expect(resolveSidebarThreadSection({ snoozed: false, settled: true, pinned: true })).toBe(
       "settled",
     );
+  });
+});
+
+describe("main sidebar thread filtering", () => {
+  it("keeps parents and ordinary forks while excluding sidechat children", () => {
+    const parent = makeThread({ id: ThreadId.make("parent") });
+    const ordinaryFork = makeThread({ id: ThreadId.make("ordinary-fork") });
+    const sidechat = makeThread({
+      id: ThreadId.make("sidechat"),
+      origin: {
+        threadId: parent.id,
+        turnId: TurnId.make("turn-1"),
+        createdAt: "2026-03-09T10:01:00.000Z",
+      },
+    });
+
+    expect([parent, ordinaryFork, sidechat].filter(isMainSidebarThread)).toEqual([
+      parent,
+      ordinaryFork,
+    ]);
   });
 });
 

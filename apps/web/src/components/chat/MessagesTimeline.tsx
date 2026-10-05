@@ -40,6 +40,8 @@ import { Link } from "@tanstack/react-router";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import { parseSessionBridgeMessage } from "@t3tools/shared/sessionBridgeMessage";
+import { SessionBridgeMessageAttribution } from "./SessionBridgeMessageAttribution";
 import {
   resolveWorkEntryToolPresentation,
   resolveViewedImageAsset,
@@ -1982,7 +1984,15 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     (attachment) => !isImageAttachment(attachment) && !isFileAttachment(attachment),
   );
   const userMessage = resolveUserMessagePresentation(row.message);
-  const resolvedContext = useMemo(() => resolveUserMessageContext(row.message), [row.message]);
+  const bridgeOrigin = useMemo(() => parseSessionBridgeMessage(row.message), [row.message]);
+  const resolvedContext = useMemo(
+    () =>
+      resolveUserMessageContext(
+        bridgeOrigin ? { ...row.message, text: bridgeOrigin.body } : row.message,
+      ),
+    [bridgeOrigin, row.message],
+  );
+  const copyText = bridgeOrigin ? row.message.text : resolvedContext.text;
   const previewImages = useMemo(
     () => userImages.filter((image) => image.name.startsWith("preview-annotation-")),
     [userImages],
@@ -2147,6 +2157,12 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       ) : null}
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
         <MessageAuthorHeading>You</MessageAuthorHeading>
+        {bridgeOrigin ? (
+          <SessionBridgeMessageAttribution
+            origin={bridgeOrigin}
+            currentEnvironmentId={ctx.activeThreadEnvironmentId}
+          />
+        ) : null}
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
             {regularImages.map((image) => (
@@ -2287,11 +2303,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 // Structured paste needs the canonical links to retain their positions.
                 text={
                   contextClipboardFragment
-                    ? resolvedContext.text
-                    : replaceComposerContextReferences(
-                        resolvedContext.text,
-                        (reference) => reference.label,
-                      )
+                    ? copyText
+                    : replaceComposerContextReferences(copyText, (reference) => reference.label)
                 }
                 {...(contextClipboardFragment
                   ? {

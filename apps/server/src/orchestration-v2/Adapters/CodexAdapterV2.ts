@@ -874,12 +874,12 @@ const countTerminalTurnsAfterBoundary = (
 
 const resolveCodexForkRollbackTurnCount = Effect.fn("CodexAdapterV2.resolveForkRollbackTurnCount")(
   function* (input: ProviderAdapterV2ForkThreadInput) {
-    if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
+    if (input.providerTurnId === undefined) {
       return 0;
     }
 
     const rollbackTurnCount = countTerminalTurnsAfterBoundary(
-      providerTurnsForThread(input.sourceProviderTurns, input.sourceProviderThread),
+      providerTurnsForThread(input.sourceProviderTurns ?? [], input.sourceProviderThread),
       input.providerTurnId,
     );
     if (rollbackTurnCount === null) {
@@ -6249,6 +6249,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 ),
               );
               let forkedThread = response.thread;
+              if (forkedThread.id === threadId || forkedThread.id.trim() === "") {
+                return yield* new ProviderAdapterForkThreadError({
+                  driver: CODEX_PROVIDER,
+                  providerThreadId: threadInput.sourceProviderThread.id,
+                  cause: "Codex fork returned an empty or reused source identity.",
+                });
+              }
               if (boundary.rollbackTurnCount > 0) {
                 // Reached only when the selected source turn has no native
                 // turn reference, so the fork had to be taken at head and then

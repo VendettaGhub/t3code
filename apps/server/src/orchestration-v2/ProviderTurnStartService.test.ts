@@ -2,10 +2,12 @@ import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  ContextTransferId,
   MessageId,
   NodeId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
@@ -32,7 +34,10 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { ProviderAdapterEventStreamError } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterEventStreamError,
+  ProviderAdapterForkThreadError,
+} from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -155,6 +160,10 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly missingForkBoundary?: boolean;
+  readonly rejectedSidechatFork?: boolean;
+  readonly sidechat?: boolean;
+  readonly uncertainDelivery?: boolean;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -235,6 +244,7 @@ function makeLocalCommandHarness(input: {
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
       id: threadId,
+      ...(input.sidechat ? { sidechat: true } : {}),
       activeProviderThreadId: providerThreadId,
       branch: null,
       worktreePath: null,
@@ -353,9 +363,66 @@ function makeLocalCommandHarness(input: {
       providerThreads: projection.providerThreads.map((candidate) =>
         candidate.id === providerThreadId ? { ...candidate, nativeThreadRef } : candidate,
       ),
+      contextHandoffs: input.uncertainDelivery
+        ? [
+            {
+              toProviderThreadId: providerThreadId,
+              delivery: { nativeThreadId: nativeThreadRef.nativeId, status: "pending" },
+            } as OrchestrationV2ThreadProjection["contextHandoffs"][number],
+          ]
+        : [],
     };
   }
   const events: Array<OrchestrationV2DomainEvent> = [];
+  if (input.missingForkBoundary || input.rejectedSidechatFork) {
+    projection = {
+      ...projection,
+      thread: {
+        ...projection.thread,
+        sidechat: true,
+      },
+      providerTurns: input.rejectedSidechatFork
+        ? [
+            {
+              id: ProviderTurnId.make("source-turn"),
+              runAttemptId: attemptId,
+              providerThreadId,
+            } as OrchestrationV2ThreadProjection["providerTurns"][number],
+          ]
+        : [],
+      contextTransfers: [
+        {
+          id: ContextTransferId.make("missing-boundary-fork"),
+          type: "fork",
+          sourceThreadId: threadId,
+          targetThreadId: threadId,
+          sourcePoint: { threadId, runId },
+          basePoint: null,
+          sourceProviderInstanceId: newInstanceId,
+          targetProviderInstanceId: newInstanceId,
+          targetRunId: runId,
+          status: "pending",
+          resolution: null,
+          createdBy: "user",
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          consumedAt: null,
+        },
+      ],
+    };
+  }
+  const forkThread = vi.fn(() =>
+    input.rejectedSidechatFork
+      ? Effect.fail(
+          new ProviderAdapterForkThreadError({
+            driver: providerThread.driver,
+            providerThreadId,
+            cause: "Unverified private transcript detail",
+          }),
+        )
+      : Effect.die("Missing boundary must never reach native fork."),
+  );
   const interruptRun = () => {
     projection = {
       ...projection,
@@ -381,57 +448,62 @@ function makeLocalCommandHarness(input: {
       ),
     ),
   );
+  const resumeThread = vi.fn(() =>
+    Effect.fail(
+      new ProviderAdapterEventStreamError({
+        driver: providerThread.driver,
+        providerSessionId,
+        cause: "native thread is gone",
+      }),
+    ),
+  );
+  const fallbackEnsureThread = vi.fn(() => Effect.succeed(providerThread));
   const resumeFallbackSession = {
     driver: providerThread.driver,
-    resumeThread: () =>
-      Effect.fail(
-        new ProviderAdapterEventStreamError({
-          driver: providerThread.driver,
-          providerSessionId,
-          cause: "native thread is gone",
-        }),
-      ),
-    ensureThread: () => Effect.succeed(providerThread),
+    resumeThread,
+    ensureThread: fallbackEnsureThread,
   };
   const open = vi.fn(() =>
-    input.interruptOpen === true
-      ? Effect.interrupt
-      : "historyReadFailureAfterFallback" in input
-        ? Effect.succeed(resumeFallbackSession as never)
-        : "ensureThreadFailure" in input
-          ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-          : "openFailure" in input
-            ? Effect.sync(() => {
-                if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-              }).pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new ProviderSessionManager.ProviderSessionOpenError({
-                      instanceId: newInstanceId,
-                      providerSessionId,
-                      cause: input.openFailure,
-                    }),
+    input.missingForkBoundary || input.rejectedSidechatFork
+      ? Effect.succeed({ driver: providerThread.driver, forkThread } as never)
+      : input.interruptOpen === true
+        ? Effect.interrupt
+        : "historyReadFailureAfterFallback" in input
+          ? Effect.succeed(resumeFallbackSession as never)
+          : "ensureThreadFailure" in input
+            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+            : "openFailure" in input
+              ? Effect.sync(() => {
+                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new ProviderSessionManager.ProviderSessionOpenError({
+                        instanceId: newInstanceId,
+                        providerSessionId,
+                        cause: input.openFailure,
+                      }),
+                    ),
                   ),
-                ),
-              )
-            : input.failReadsAfterRunning === true
-              ? Effect.succeed({
-                  driver: providerThread.driver,
-                  providerSession: {
-                    id: providerSessionId,
+                )
+              : input.failReadsAfterRunning === true
+                ? Effect.succeed({
                     driver: providerThread.driver,
-                    providerInstanceId: newInstanceId,
-                    status: "ready",
-                    cwd: "/tmp/native-account-command",
-                    model: null,
-                    capabilities: CodexProviderCapabilitiesV2,
-                    createdAt: now,
-                    updatedAt: now,
-                    lastError: null,
-                  },
-                  ensureThread: () => Effect.succeed(providerThread),
-                } as never)
-              : Effect.die("A local command must not open a native session."),
+                    providerSession: {
+                      id: providerSessionId,
+                      driver: providerThread.driver,
+                      providerInstanceId: newInstanceId,
+                      status: "ready",
+                      cwd: "/tmp/native-account-command",
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: now,
+                      updatedAt: now,
+                      lastError: null,
+                    },
+                    ensureThread: () => Effect.succeed(providerThread),
+                  } as never)
+                : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
@@ -495,6 +567,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThreadRecords: () => Effect.succeed(projection),
           getTurnStartContext: () =>
             Effect.succeed({
               ...projection,
@@ -531,6 +604,10 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    ensureThread,
+    resumeThread,
+    fallbackEnsureThread,
+    forkThread,
     open,
     writeIfRunCurrent,
     startRootRun,
@@ -552,6 +629,109 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect(
+  "fails before native fork or prompt when its persisted source turn is missing",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Continue", missingForkBoundary: true });
+      const error = yield* Effect.flip(harness.start);
+      expect(String(error.cause)).toContain("no source provider execution");
+      expect(harness.forkThread).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.events).toEqual([]);
+    }),
+);
+
+effectIt.effect("never creates an empty session for a sidechat with lost native context", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      sidechat: true,
+      ensureThreadFailure: "must not create a fresh session",
+    });
+    yield* harness.start;
+    expect(harness.ensureThread).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: {
+          message:
+            "The sidechat could not start because its context could be incomplete. The original conversation is unchanged.",
+        },
+      },
+    ]);
+  }),
+);
+
+for (const uncertainDelivery of [false, true]) {
+  effectIt.effect(
+    `never replaces a native sidechat with portable context after ${uncertainDelivery ? "uncertain delivery" : "resume failure"}`,
+    () =>
+      Effect.gen(function* () {
+        const harness = makeLocalCommandHarness({
+          text: "Continue",
+          sidechat: true,
+          uncertainDelivery,
+          historyReadFailureAfterFallback: new Error("must not read portable history"),
+        });
+        yield* harness.start;
+        expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
+        expect(harness.resumeThread).toHaveBeenCalledTimes(uncertainDelivery ? 0 : 1);
+        const retry = makeLocalCommandHarness({
+          text: "Continue",
+          sidechat: true,
+          uncertainDelivery,
+          historyReadFailureAfterFallback: new Error("must not read portable history"),
+        });
+        const error = yield* Effect.flip(retry.startWithRetry);
+        expect(error._tag).toBe("ProviderTurnStartError");
+        expect(retry.fallbackEnsureThread).not.toHaveBeenCalled();
+        expect(retry.projection().runs.at(-1)?.status).toBe("starting");
+        expect(retry.events).toEqual([]);
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().providerThreads.at(-1)?.nativeThreadRef?.nativeId).toBe(
+          "native-resume-thread",
+        );
+        expect(
+          harness.events.some(
+            (event) =>
+              event.type === "context-handoff.updated" || event.type === "context-transfer.updated",
+          ),
+        ).toBe(false);
+        expect(harness.projection().turnItems).toMatchObject([
+          {
+            type: "error",
+            failure: {
+              message:
+                "The sidechat could not start because its context could be incomplete. The original conversation is unchanged.",
+            },
+          },
+        ]);
+      }),
+  );
+}
+
+effectIt.effect("reports the safe sidechat context failure after its shell exists", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", rejectedSidechatFork: true });
+    yield* harness.start;
+    expect(harness.forkThread).toHaveBeenCalledOnce();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: {
+          message:
+            "The sidechat could not start because its context could be incomplete. The original conversation is unchanged.",
+        },
+      },
+    ]);
+  }),
+);
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
   Effect.gen(function* () {
@@ -731,6 +911,7 @@ effectIt.effect(
       // the run is not failed as a provider error on the last attempt.
       expect(error._tag).toBe("ProviderTurnStartError");
       expect((error.cause as { _tag?: string } | undefined)?._tag).toBe("ProjectionStoreReadError");
+      expect(harness.fallbackEnsureThread).toHaveBeenCalledOnce();
       expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
       expect(harness.projection().runs.at(-1)?.status).toBe("starting");
       expect(harness.events).toEqual([]);

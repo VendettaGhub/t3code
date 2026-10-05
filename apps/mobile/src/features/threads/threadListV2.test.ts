@@ -21,6 +21,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -31,6 +32,7 @@ import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
+  isMainThread,
   isThreadListV2ListItem,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozeGateExpiryMs,
@@ -54,6 +56,84 @@ function makeThread(
 }
 
 const NOW = "2026-06-02T00:00:00.000Z";
+
+it("uses the V2 presentation bridge to distinguish marked sidechats from ordinary forks and subagents", () => {
+  const parentId = ThreadId.make("parent");
+  const raw = makeRawThreadShell({
+    forkedFrom: { type: "run", threadId: parentId, runId: RunId.make("run") },
+    lineage: { rootThreadId: parentId, parentThreadId: parentId, relationshipToParent: "fork" },
+  });
+  expect(isMainThread(presentThreadShell(environmentId, raw))).toBe(true);
+  expect(isMainThread(presentThreadShell(environmentId, { ...raw, sidechat: true }))).toBe(false);
+  const legacy = {
+    ...raw,
+    forkedFrom: null,
+    origin: { threadId: parentId, turnId: TurnId.make("legacy-turn"), createdAt: NOW },
+  };
+  expect(isMainThread(presentThreadShell(environmentId, legacy))).toBe(false);
+  expect(
+    isMainThread(
+      presentThreadShell(environmentId, {
+        ...raw,
+        lineage: { ...raw.lineage, relationshipToParent: "subagent" },
+      }),
+    ),
+  ).toBe(true);
+});
+
+it("only classifies explicit sidechat origins as non-main threads", () => {
+  const root = makeThread({ id: ThreadId.make("root"), title: "Root" });
+  for (const relationshipToParent of ["fork", "subagent", null] as const) {
+    const thread = makeThread({
+      id: ThreadId.make("child"),
+      title: "Child",
+      lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent },
+      forkedFrom: { type: "run", threadId: root.id, runId: RunId.make("run") },
+    });
+    expect(isMainThread(thread)).toBe(true);
+    expect(isMainThread({ ...thread, origin: null })).toBe(true);
+    expect(
+      isMainThread({
+        ...thread,
+        origin: { threadId: root.id, runId: RunId.make("run"), createdAt: NOW },
+      }),
+    ).toBe(false);
+  }
+});
+
+it.each(["legacy", "native"] as const)(
+  "excludes %s sidechats from main rows, counts, search and ordering",
+  (kind) => {
+    const parent = makeThread({ id: ThreadId.make("parent"), title: "Main" });
+    const children = [
+      {},
+      { pinnedAt: NOW },
+      { settledOverride: "settled" as const, settledAt: NOW },
+      { snoozedUntil: "2026-06-03T00:00:00.000Z" },
+    ].map((state, index) =>
+      makeThread({
+        id: ThreadId.make(`sidechat-${index}`),
+        title: "Sidechat",
+        origin:
+          kind === "legacy"
+            ? { threadId: parent.id, turnId: TurnId.make("turn"), createdAt: NOW }
+            : { threadId: parent.id, runId: RunId.make("run"), createdAt: NOW },
+        ...state,
+      }),
+    );
+    const threads = [parent, ...children];
+    const input = { threads, environmentId: null, searchQuery: "", now: NOW };
+    const layout = buildThreadListV2Items(input);
+    expect(layout.items.map((item) => item.thread.id)).toEqual([parent.id]);
+    expect(layout.settledCount).toBe(0);
+    expect(layout.snoozedCount).toBe(0);
+    expect(layout.hiddenSettledCount).toBe(0);
+    expect(layout.nextSnoozeWakeAt).toBeNull();
+    expect(buildThreadListV2Items({ ...input, searchQuery: "Sidechat" }).items).toEqual([]);
+    expect(getThreadListV2OrderedSection({ ...input, section: "active" })).toEqual([parent]);
+    expect(getThreadListV2OrderedSection({ ...input, section: "pinned" })).toEqual([]);
+  },
+);
 
 const linkedPullRequest = {
   projectId: ProjectId.make("project-1"),

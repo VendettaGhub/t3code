@@ -2,11 +2,45 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildHomeProjectScopes, sortHomeProjectScopes } from "./homeThreadList";
 import { makeThreadShellFixture } from "../../test-fixtures";
+
+it("does not reorder main project scopes for sidechat activity", () => {
+  const environmentId = EnvironmentId.make("environment-1");
+  const projects = ["a", "b"].map((id) =>
+    makeProject({ environmentId, id: ProjectId.make(id), title: id }),
+  );
+  const scopes = buildHomeProjectScopes({
+    projects,
+    environmentId: null,
+    projectGroupingMode: "separate",
+  });
+  const threads = [
+    makeThread({
+      environmentId,
+      id: ThreadId.make("sidechat"),
+      projectId: projects[1]!.id,
+      title: "Sidechat",
+      updatedAt: "2026-06-03T00:00:00.000Z",
+      origin: {
+        threadId: ThreadId.make("parent"),
+        runId: RunId.make("run"),
+        createdAt: "2026-06-03T00:00:00.000Z",
+      },
+    }),
+  ];
+  expect(
+    sortHomeProjectScopes({
+      scopes,
+      threads,
+      pendingTasks: [],
+      projectSortOrder: "updated_at",
+    }).map((scope) => scope.title),
+  ).toEqual(["a", "b"]);
+});
 
 function makeProject(
   input: Partial<EnvironmentProject> & Pick<EnvironmentProject, "environmentId" | "id" | "title">,

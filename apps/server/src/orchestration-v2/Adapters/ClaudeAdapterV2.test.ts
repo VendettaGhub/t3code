@@ -1617,6 +1617,8 @@ describe("ClaudeAdapterV2 native fork", () => {
         const forkCalls: Array<{
           readonly sessionId: string;
           readonly options: unknown;
+          readonly environment: NodeJS.ProcessEnv;
+          readonly configDir: string;
           readonly threadId: ThreadId;
           readonly providerSessionId: ProviderSessionId;
         }> = [];
@@ -1711,6 +1713,10 @@ describe("ClaudeAdapterV2 native fork", () => {
               dir: "/workspace",
               upToMessageId: "assistant-message-cursor",
             },
+            environment: {},
+            configDir: (yield* Path.Path).resolve(
+              (yield* Path.Path).join(NodeOS.homedir(), ".claude"),
+            ),
             threadId: targetThreadId,
             providerSessionId,
           },
@@ -1718,6 +1724,14 @@ describe("ClaudeAdapterV2 native fork", () => {
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
         assert.equal(forkedProviderThread.forkedFrom?.providerThreadId, sourceProviderThread.id);
         assert.equal(forkedProviderThread.forkedFrom?.providerTurnId, providerTurnId);
+        const missingBoundary = yield* Effect.exit(
+          runtime.forkThread({
+            sourceProviderThread,
+            providerTurnId,
+            targetThreadId,
+          }),
+        );
+        assert.isTrue(Exit.isFailure(missingBoundary));
 
         yield* runtime.startTurn({
           appThread: {

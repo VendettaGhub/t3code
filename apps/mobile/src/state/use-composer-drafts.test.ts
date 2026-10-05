@@ -148,6 +148,8 @@ vi.mock("../features/sharing/incoming-share-storage", () => ({
 }));
 
 import type { DraftComposerAttachment } from "../lib/composerImages";
+import { appendSidechatExcerptToMainDraft } from "../features/sidechat/appendSidechatExcerpt";
+import { shouldTransferSideQuestionDraft } from "../features/sidechat/sidechatModel";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import { appAtomRegistry } from "./atom-registry";
 import { threadOutboxManager } from "./thread-outbox";
@@ -240,6 +242,129 @@ function contextDraft(start: number, count: number): ComposerDraft {
 }
 
 describe("mobile composer drafts", () => {
+  it("appends a selected sidechat message without overwriting an unmounted main draft", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const mainThreadId = ThreadId.make("main-thread");
+    const attachment: DraftComposerAttachment = {
+      type: "file",
+      id: "existing-file",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      sizeBytes: 10,
+      fileUri: "file:///notes.txt",
+    };
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-sol",
+    };
+    const key = `${environmentId}:${mainThreadId}`;
+    appAtomRegistry.set(composerDraftsAtom, {
+      [key]: { text: "Keep this draft", attachments: [attachment], modelSelection },
+    });
+    rememberComposerDraftSelection(key, "Keep this draft", { start: 0, end: 4 });
+
+    expect(
+      appendSidechatExcerptToMainDraft({
+        environmentId,
+        mainThreadId,
+        sidechatId: ThreadId.make("sidechat-1"),
+        sourceMessageId: MessageId.make("message-1"),
+        sidechatTitle: "Investigate the bug",
+        excerpt: "The selected provider trace is useful.",
+      }),
+    ).toBe(true);
+
+    const draft = getComposerDraftSnapshot(key);
+    expect(draft.text.indexOf("Keep this draft")).toBe(0);
+    expect(draft.text).toContain("Keep this draft");
+    expect(draft.text).toContain("The selected provider trace is useful.");
+    expect(draft.context?.records).toEqual([
+      expect.objectContaining({
+        kind: "sidechat-excerpt",
+        payload: expect.objectContaining({
+          sidechatId: "sidechat-1",
+          sourceMessageId: "message-1",
+        }),
+      }),
+    ]);
+    expect(draft.attachments).toEqual([attachment]);
+    expect(draft.modelSelection).toEqual(modelSelection);
+  });
+
+  it("transfers the currently edited child draft without clearing the native fork parent", () => {
+    const parentKey = "environment-1:main-thread";
+    const childKey = "environment-1:sidechat-thread";
+    const parentAttachment: DraftComposerAttachment = {
+      type: "file",
+      id: "parent-file",
+      name: "parent.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      fileUri: "file:///parent.txt",
+    };
+    const childAttachment: DraftComposerAttachment = {
+      type: "file",
+      id: "child-file",
+      name: "child.txt",
+      mimeType: "text/plain",
+      sizeBytes: 5,
+      fileUri: "file:///child.txt",
+    };
+    const parentDraft: ComposerDraft = {
+      text: "Keep the main task",
+      attachments: [parentAttachment],
+    };
+    const childDraft: ComposerDraft = {
+      text: "/btw inspect this child",
+      attachments: [childAttachment],
+    };
+
+    const merged = mergeComposerDraftContentState({ [parentKey]: parentDraft }, childKey, {
+      text: "inspect this child",
+      attachments: childDraft.attachments,
+    });
+
+    expect(merged[parentKey]).toEqual(parentDraft);
+    expect(merged[childKey]).toEqual({
+      text: "inspect this child",
+      attachments: [childAttachment],
+    });
+  });
+
+  it("keeps both owner drafts and attachments for a bare side-question fork", () => {
+    const parentKey = "environment-1:main-thread";
+    const childKey = "environment-1:sidechat-thread";
+    const parentAttachment: DraftComposerAttachment = {
+      type: "file",
+      id: "parent-file",
+      name: "parent.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      fileUri: "file:///parent.txt",
+    };
+    const childAttachment: DraftComposerAttachment = {
+      type: "file",
+      id: "child-file",
+      name: "child.txt",
+      mimeType: "text/plain",
+      sizeBytes: 5,
+      fileUri: "file:///child.txt",
+    };
+    const drafts = {
+      [parentKey]: { text: "Keep the main task", attachments: [parentAttachment] },
+      [childKey]: { text: "Keep the child draft", attachments: [childAttachment] },
+    } satisfies Record<string, ComposerDraft>;
+
+    const next = shouldTransferSideQuestionDraft(null)
+      ? mergeComposerDraftContentState(drafts, "environment-1:fresh-sidechat", {
+          text: "",
+          attachments: drafts[parentKey].attachments,
+        })
+      : drafts;
+
+    expect(next).toEqual(drafts);
+  });
+
   it.each([false, true])(
     "restores visible file chips from legacy drafts (archived: %s)",
     async (archived) => {

@@ -562,7 +562,7 @@ export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "line
 }
 
 export function filterSidebarV2VisibleThreads<
-  T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage"> & {
+  T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage" | "origin"> & {
     environmentId: string;
     projectId: string;
   },
@@ -571,6 +571,7 @@ export function filterSidebarV2VisibleThreads<
     (thread) =>
       thread.archivedAt === null &&
       !isSidebarSubagentThread(thread) &&
+      isMainSidebarThread(thread) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
@@ -1112,6 +1113,11 @@ export function filterSidebarProjectScopeItems<TItem extends { readonly value: s
   const query = input.query.trim();
   if (query.length === 0) return input.items;
   return input.items.filter((item) => item.value !== "all" && input.matches(item, query));
+}
+
+/** Sidechat children live in the main thread's sidechat history, not this list. */
+export function isMainSidebarThread(thread: Pick<SidebarThreadSummary, "origin">): boolean {
+  return thread.origin == null;
 }
 
 export interface SidebarProjectScopeMenuState {

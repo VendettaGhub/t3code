@@ -72,6 +72,7 @@ type ThreadGitHeaderActionItems = {
   readonly terminal: HeaderItem;
   readonly files: HeaderItem;
   readonly git: HeaderItem;
+  readonly sidechats: HeaderItem;
 };
 type QuickActionIcon =
   | "arrow.down.circle"
@@ -108,6 +109,8 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
   readonly onOpenTerminal: (terminalId?: string | null) => void;
   readonly onOpenNewTerminal: () => void;
   readonly onRunProjectScript: (script: ProjectScript) => Promise<void>;
+  readonly onOpenSidechats: () => void;
+  readonly onOpenSideQuestion: () => void;
 };
 
 function useThreadGitControlModel(props: ThreadGitMenuProps) {
@@ -381,6 +384,32 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
         type: "menu",
         variant: "plain",
       },
+      sidechats: {
+        accessibilityLabel: "Side questions",
+        icon: { name: "text.bubble", type: "sfSymbol" },
+        identifier: "thread-right-sidechats",
+        label: "Side questions",
+        menu: {
+          title: "Side questions",
+          items: [
+            {
+              id: "thread-start-side-question",
+              title: "Start side question",
+              icon: "text.bubble",
+              onPress: props.onOpenSideQuestion,
+            },
+            {
+              id: "thread-side-question-history",
+              title: "Side question history",
+              icon: "clock",
+              onPress: props.onOpenSidechats,
+            },
+          ],
+        },
+        sharesBackground: true,
+        type: "menu",
+        variant: "plain",
+      },
     }),
     [
       model.currentBranchLabel,
@@ -400,6 +429,8 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       props.onOpenNewTerminal,
       props.onOpenTerminal,
       props.onRunProjectScript,
+      props.onOpenSidechats,
+      props.onOpenSideQuestion,
       props.projectScripts,
       props.terminalSessions,
     ],
@@ -409,7 +440,13 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems,
+    () =>
+      [
+        actionItems.sidechats,
+        actionItems.git,
+        actionItems.files,
+        actionItems.terminal,
+      ] as HeaderItems,
     [actionItems],
   );
 }
@@ -417,7 +454,13 @@ export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): Hea
 export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems,
+    () =>
+      [
+        actionItems.sidechats,
+        actionItems.files,
+        actionItems.git,
+        actionItems.terminal,
+      ] as HeaderItems,
     [actionItems],
   );
 }
@@ -505,6 +548,28 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           onPress={model.openFiles}
           separateBackground
         />
+      ) : null}
+      {showActionControls ? (
+        <NativeHeaderToolbar.Menu
+          accessibilityLabel="Side questions"
+          icon="text.bubble"
+          separateBackground
+        >
+          <NativeHeaderToolbar.MenuAction
+            icon="text.bubble"
+            onPress={props.onOpenSideQuestion}
+            subtitle="Fork the latest completed turn"
+          >
+            <NativeHeaderToolbar.Label>Start side question</NativeHeaderToolbar.Label>
+          </NativeHeaderToolbar.MenuAction>
+          <NativeHeaderToolbar.MenuAction
+            icon="clock"
+            onPress={props.onOpenSidechats}
+            subtitle="Resume an earlier side question"
+          >
+            <NativeHeaderToolbar.Label>Side question history</NativeHeaderToolbar.Label>
+          </NativeHeaderToolbar.MenuAction>
+        </NativeHeaderToolbar.Menu>
       ) : null}
       {showActionControls ? createNativeHeaderMenu(threadGitMenuDefinition(props, model)) : null}
     </NativeHeaderToolbar>

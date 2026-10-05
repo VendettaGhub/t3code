@@ -25,6 +25,8 @@ import {
 } from "@t3tools/contracts";
 import { renderAssistantCitationsAsText } from "@t3tools/shared/assistantCitations";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
+import { parseSessionBridgeMessage } from "@t3tools/shared/sessionBridgeMessage";
+import { SessionBridgeMessageAttribution } from "./SessionBridgeMessageAttribution";
 import {
   parseComposerContextHref,
   collectComposerContextReferences,
@@ -272,6 +274,7 @@ export interface ThreadFeedProps {
   readonly dispatchingMessageId: MessageId | null;
   /** Null where a pending message cannot be edited (no composer to edit it in). */
   readonly onEditPendingMessage: ((message: QueuedThreadMessage) => void) | null;
+  readonly onAppendSidechatMessage?: (messageId: MessageId, text: string) => void;
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly threadTitle: string;
@@ -1517,6 +1520,7 @@ function renderFeedEntry(
     | "skills"
     | "dispatchingMessageId"
     | "onEditPendingMessage"
+    | "onAppendSidechatMessage"
     | "threadId"
     | "workspaceRoot"
   > & {
@@ -1635,7 +1639,11 @@ function renderFeedEntry(
   if (entry.type === "message") {
     const { message } = entry;
     const isUser = message.role === "user";
-    const presentation = resolveUserMessagePresentation(message);
+    const bridgeOrigin = isUser ? parseSessionBridgeMessage(message) : null;
+    const messageContent = bridgeOrigin?.body ?? message.text;
+    const presentation = resolveUserMessagePresentation(
+      bridgeOrigin ? { ...message, text: messageContent } : message,
+    );
     const renderedText = renderAssistantCitationsAsText(presentation.text);
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
@@ -1754,7 +1762,13 @@ function renderFeedEntry(
                 })}
               </View>
             ) : null}
-            {message.text.trim().length > 0 ? (
+            {bridgeOrigin ? (
+              <SessionBridgeMessageAttribution
+                origin={bridgeOrigin}
+                currentEnvironmentId={props.environmentId}
+              />
+            ) : null}
+            {messageContent.trim().length > 0 ? (
               <MarkdownImageAvailableWidthContext
                 value={props.userBubbleMaxWidth - USER_BUBBLE_HORIZONTAL_PADDING * 2}
               >
@@ -1821,7 +1835,7 @@ function renderFeedEntry(
             {presentation.text.trim().length > 0 ? (
               <CopyTextButton
                 accessibilityLabel="Copy message"
-                text={presentation.text}
+                text={bridgeOrigin ? message.text : presentation.text}
                 onCopy={
                   message.context
                     ? () =>
@@ -1836,6 +1850,19 @@ function renderFeedEntry(
                 buttonSize={28}
                 iconSize={13}
               />
+            ) : null}
+            {props.onAppendSidechatMessage && message.text.trim().length > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Add message to main composer"
+                hitSlop={8}
+                className="px-1"
+                onPress={() => props.onAppendSidechatMessage?.(message.id, message.text)}
+              >
+                <Text className="font-t3-medium text-xs text-foreground-muted">
+                  Use in main chat
+                </Text>
+              </Pressable>
             ) : null}
           </View>
         </Animated.View>
@@ -1915,6 +1942,19 @@ function renderFeedEntry(
               buttonSize={28}
               iconSize={13}
             />
+            {props.onAppendSidechatMessage && message.text.trim().length > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Add message to main composer"
+                hitSlop={8}
+                className="px-1"
+                onPress={() => props.onAppendSidechatMessage?.(message.id, message.text)}
+              >
+                <Text className="font-t3-medium text-xs text-foreground-muted">
+                  Use in main chat
+                </Text>
+              </Pressable>
+            ) : null}
             <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
               {timestampLabel}
             </Text>
@@ -2929,6 +2969,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             environmentId: props.environmentId,
             dispatchingMessageId: props.dispatchingMessageId,
             onEditPendingMessage: props.onEditPendingMessage,
+            onAppendSidechatMessage: props.onAppendSidechatMessage,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             threadId: props.threadId,
             copiedRowId,
@@ -2976,6 +3017,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       setupAnchorIndex,
       props.dispatchingMessageId,
       props.onEditPendingMessage,
+      props.onAppendSidechatMessage,
       copiedRowId,
       disclosureToggleSettling,
       expandedWorkRows,

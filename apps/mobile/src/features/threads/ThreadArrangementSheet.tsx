@@ -27,7 +27,11 @@ import {
   threadDragAction,
   type ThreadMoveDestination,
 } from "./threadOrder";
-import { getThreadListV2OrderedSection, threadListInboxReturns } from "./threadListV2";
+import {
+  getThreadListV2OrderedSection,
+  threadListInboxReturns,
+  isMainThread,
+} from "./threadListV2";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 
 const ROW_HEIGHT = 56;
@@ -194,7 +198,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
     const active = getThreadListV2OrderedSection({ ...shared, section: "active" });
     const visible = new Set([...pinned, ...active].map(keyOf));
     const parked = threads.filter(
-      (thread) => thread.archivedAt === null && !visible.has(keyOf(thread)),
+      (thread) => isMainThread(thread) && thread.archivedAt === null && !visible.has(keyOf(thread)),
     );
     return {
       pinned,

@@ -11,6 +11,7 @@ import {
   ProviderThreadId,
   RunId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -50,6 +51,12 @@ function makeSourceThread(): OrchestrationV2AppThread {
       rootThreadId: sourceThreadId,
     },
     forkedFrom: null,
+    sidechat: true,
+    origin: {
+      threadId: ThreadId.make("legacy-parent"),
+      turnId: TurnId.make("legacy-turn"),
+      createdAt: "2026-07-24T09:00:00.000Z",
+    },
     createdAt: sourceCreatedAt,
     updatedAt: snoozedAt,
     archivedAt: null,
@@ -106,7 +113,7 @@ function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2Thr
   };
 }
 
-const planFork = (sourceRun: OrchestrationV2Run) =>
+const planFork = (sourceRun: OrchestrationV2Run, sidechat?: true) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
     return yield* service.plan({
@@ -120,6 +127,7 @@ const planFork = (sourceRun: OrchestrationV2Run) =>
       transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
       targetThreadId,
       title: "Awake fork",
+      ...(sidechat === undefined ? {} : { sidechat }),
       createdBy: "user",
       creationSource: "mobile",
       createdAt: forkCreatedAt,
@@ -138,6 +146,23 @@ it("treats usage-limited and other provider-finished runs as forkable", () => {
   assert.isFalse(ThreadForkService.isForkableSourceRunStatus("preparing"));
   assert.isFalse(ThreadForkService.isForkableSourceRunStatus("rolled_back"));
 });
+
+it.effect("marks only requested sidechats and preserves the exact native run origin", () =>
+  Effect.gen(function* () {
+    const marked = yield* planFork(makeSourceRun("completed"), true);
+    const normal = yield* planFork(makeSourceRun("completed"));
+    assert.isTrue(marked.targetThread.sidechat);
+    assert.isUndefined(normal.targetThread.sidechat);
+    assert.isUndefined(marked.targetThread.origin);
+    assert.isUndefined(normal.targetThread.origin);
+    assert.equal(makeSourceThread().origin?.turnId, "legacy-turn");
+    assert.deepEqual(marked.targetThread.forkedFrom, {
+      type: "run",
+      threadId: sourceThreadId,
+      runId: sourceRunId,
+    });
+  }),
+);
 
 it.effect("keeps a fork awake when its source thread is snoozed", () =>
   Effect.gen(function* () {

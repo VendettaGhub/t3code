@@ -32,6 +32,46 @@ const TestLayer = Layer.mergeAll(
   projectionMaintenanceProvided,
 );
 
+it.effect("preserves typed V1 sidechat origin through import and projection rebuild", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const origin = {
+      threadId: "parent",
+      turnId: "legacy-turn",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    yield* sql`ALTER TABLE projection_threads ADD COLUMN origin_json TEXT`;
+    yield* sql`INSERT INTO projection_threads
+      (thread_id, project_id, title, model_selection_json, runtime_mode, created_at, updated_at, origin_json)
+      VALUES ('sidechat', 'project', 'Sidechat', '{"instanceId":"codex","model":"gpt-6-astra"}',
+      'full-access', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', ${JSON.stringify(origin)})`;
+    yield* importer.reconcileShells;
+    const thread = (yield* projections.getThreadProjection(ThreadId.make("sidechat"))).thread;
+    assert.deepStrictEqual(Reflect.get(thread, "origin"), origin);
+    assert.equal(thread.forkedFrom, null);
+    yield* importer.ensureTranscript(ThreadId.make("sidechat"));
+    yield* importer.reconcileShells;
+    assert.deepStrictEqual(
+      Reflect.get(
+        (yield* projections.getThreadProjection(ThreadId.make("sidechat"))).thread,
+        "origin",
+      ),
+      origin,
+    );
+    yield* maintenance.rebuild;
+    assert.deepStrictEqual(
+      Reflect.get(
+        (yield* projections.getThreadProjection(ThreadId.make("sidechat"))).thread,
+        "origin",
+      ),
+      origin,
+    );
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
   it.effect("uses the created-thread index for startup migration checks", () =>
     Effect.gen(function* () {

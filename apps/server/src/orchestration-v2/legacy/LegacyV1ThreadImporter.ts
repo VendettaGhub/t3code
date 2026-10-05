@@ -17,6 +17,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadOrigin,
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
   TurnItemId,
@@ -55,6 +56,7 @@ interface LegacyThreadRow {
   readonly snoozed_at: string | null;
   readonly pinned_at: string | null;
   readonly auto_settle_disabled_at: string | null;
+  readonly origin_json: string | null;
   readonly pin_order_key: string | null;
   readonly pull_requests_json: string;
   readonly linked_pull_request_json: string | null;
@@ -123,6 +125,7 @@ const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
 const decodePullRequests = Schema.decodeUnknownOption(Schema.Array(ThreadPullRequestLink));
 const decodeLinkedPullRequest = Schema.decodeUnknownOption(ThreadLinkedPullRequest);
+const decodeOrigin = Schema.decodeUnknownSync(Schema.fromJsonString(ThreadOrigin));
 const decodeStoredThread = Schema.decodeUnknownOption(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
 );
@@ -220,6 +223,11 @@ function importedThread(row: LegacyThreadRow): OrchestrationV2AppThread {
     activeOrderKey: row.active_order_key?.trim() || null,
     activeProviderThreadId: null,
     historyOrigin: "v1_import",
+    ...(row.origin_json === null
+      ? {}
+      : {
+          origin: decodeOrigin(row.origin_json),
+        }),
     lineage: {
       parentThreadId: null,
       relationshipToParent: null,
@@ -442,6 +450,10 @@ const make = Effect.gen(function* () {
 
   const reconcileShellsBase = Effect.gen(function* () {
     const now = DateTime.formatIso(yield* DateTime.now);
+    const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_threads)`;
+    const originColumn = sql.literal(
+      columns.some(({ name }) => name === "origin_json") ? "thread.origin_json" : "NULL",
+    );
     const repairRows = yield* sql<LegacyRepairRow>`
       SELECT
         thread.thread_id,
@@ -462,6 +474,7 @@ const make = Effect.gen(function* () {
         thread.snoozed_at,
         thread.pinned_at,
         thread.auto_settle_disabled_at,
+        ${originColumn} AS origin_json,
         thread.pin_order_key,
         (SELECT json_group_array(json_object('host', pr.host, 'repository', pr.repository, 'number', pr.number, 'url', pr.url, 'source', pr.source, 'linkedAt', pr.linked_at, 'snapshot', json(pr.snapshot_json), 'stack', json(pr.stack_json))) FROM projection_thread_pull_requests pr WHERE pr.thread_id = thread.thread_id) AS pull_requests_json,
         thread.linked_pull_request_json,
@@ -483,6 +496,7 @@ const make = Effect.gen(function* () {
          OR json_type(projection.payload_json, '$.pullRequests') IS NULL
          OR json_type(projection.payload_json, '$.branchPullRequest') IS NULL
          OR json_type(projection.payload_json, '$.activeOrderKey') IS NULL
+         OR (${originColumn} IS NOT NULL AND json_type(projection.payload_json, '$.origin') IS NULL)
       ORDER BY thread.created_at ASC, thread.thread_id ASC
     `;
     let repairedThreadCount = 0;
@@ -494,6 +508,9 @@ const make = Effect.gen(function* () {
       const legacyPullRequests = legacy.pullRequests ?? [];
       const repaired: OrchestrationV2AppThread = {
         ...current,
+        ...(current.origin === undefined && legacy.origin !== undefined
+          ? { origin: legacy.origin }
+          : {}),
         pinnedAt: current.pinnedAt === undefined ? legacy.pinnedAt : current.pinnedAt,
         autoSettleDisabledAt:
           current.autoSettleDisabledAt === undefined
@@ -566,6 +583,7 @@ const make = Effect.gen(function* () {
         thread.snoozed_at,
         thread.pinned_at,
         thread.auto_settle_disabled_at,
+        ${originColumn} AS origin_json,
         thread.pin_order_key,
         (SELECT json_group_array(json_object('host', pr.host, 'repository', pr.repository, 'number', pr.number, 'url', pr.url, 'source', pr.source, 'linkedAt', pr.linked_at, 'snapshot', json(pr.snapshot_json), 'stack', json(pr.stack_json))) FROM projection_thread_pull_requests pr WHERE pr.thread_id = thread.thread_id) AS pull_requests_json,
         thread.linked_pull_request_json,

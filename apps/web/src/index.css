@@ -170,6 +170,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 @theme inline {
+  --text-usage-ring: 9px;
+  --color-usage-ring-track: #737373;
+  --text-sidechat: 0.7rem;
+  --spacing-sidechat-origin: 1.875rem;
   /* Two steps below Tailwind's text-xs (12px) for dense UI: metadata rows,
      badges, counters, keyboard hints and diagnostics tables. 2xs is 11px,
      3xs is 10px. Provider icon overlays use 4xs (8px) and 5xs (7px) to fit

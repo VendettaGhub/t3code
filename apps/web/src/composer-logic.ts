@@ -12,7 +12,7 @@ import {
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand = "model" | "btw" | "plan" | "default";
 export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {
@@ -305,7 +305,7 @@ export function composerStateAtPromptEnd(text: string): {
 
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
+): Exclude<ComposerSlashCommand, "model" | "btw"> | null {
   const match = /^\/(plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;
@@ -313,6 +313,21 @@ export function parseStandaloneComposerSlashCommand(
   const command = match[1]?.toLowerCase();
   if (command === "plan") return "plan";
   return "default";
+}
+
+/**
+ * Recognize the standalone web side-question entry command.
+ *
+ * Keep this deliberately narrower than the slash-menu trigger: a question
+ * embedded in prose, a path-like token, or a fenced block must stay ordinary
+ * composer text. Once the command is the leading token, its question may be
+ * multiline or contain inline code.
+ */
+export function parseBtwCommand(text: string): { question: string } | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  const match = /^\/btw(?:\s+([\s\S]+))?$/i.exec(trimmed);
+  return match ? { question: (match[1] ?? "").trim() } : null;
 }
 
 export function replaceTextRange(

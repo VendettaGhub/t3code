@@ -50,6 +50,7 @@ import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadAgentsSheet } from "./features/threads/ThreadAgentsSheet";
 import { ThreadQueueSheet } from "./features/threads/ThreadQueueControl";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
+import { SidechatListScreen } from "./features/sidechat/SidechatListScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
 import { HomeRouteScreen } from "./features/home/HomeRouteScreen";
@@ -688,6 +689,19 @@ const RootStackConfig = createNativeStackNavigator({
       screen: ThreadRouteScreen,
       linking: THREAD_LINKING_PREFIX,
       options: GLASS_HEADER_OPTIONS,
+    }),
+    ThreadSidechats: createNativeStackScreen({
+      screen: SidechatListScreen,
+      linking: `${THREAD_LINKING_PREFIX}/sidechats`,
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Sidechats",
+      },
+    }),
+    ThreadSidechat: createNativeStackScreen({
+      screen: ThreadRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/sidechats/:sidechatId`,
+      options: SOLID_HEADER_OPTIONS,
     }),
     ThreadTerminal: createNativeStackScreen({
       screen: ThreadTerminalRouteScreen,

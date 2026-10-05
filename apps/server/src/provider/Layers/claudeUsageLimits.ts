@@ -135,19 +135,36 @@ export function claudeRateLimitEventToUpdate(
   info: SDKRateLimitInfo,
   names: ClaudeScopedLimitNames,
 ): ProviderUsageLimitsUpdate | undefined {
+  const windows: ServerProviderUsageWindow[] = [];
+  // Newer CLIs report both account windows here without a top-level utilization.
+  const unified = (info as { readonly unifiedWindows?: unknown }).unifiedWindows;
+  if (typeof unified === "object" && unified !== null && !Array.isArray(unified)) {
+    for (const id of Object.keys(WINDOWS)) {
+      const raw = (unified as Record<string, unknown>)[id];
+      if (typeof raw !== "object" || raw === null) continue;
+      const window = raw as { readonly utilization?: unknown; readonly resetsAt?: unknown };
+      if (typeof window.utilization !== "number" || !Number.isFinite(window.utilization)) continue;
+      windows.push(
+        makeWindow(
+          id,
+          window.utilization * 100,
+          isoFromEpochSeconds(typeof window.resetsAt === "number" ? window.resetsAt : undefined),
+        ),
+      );
+    }
+  }
   const type: string | undefined = info.rateLimitType;
-  if (!type || typeof info.utilization !== "number") {
-    return undefined;
+  if (type && typeof info.utilization === "number" && Number.isFinite(info.utilization)) {
+    const usedPercent = info.utilization * 100;
+    const resetsAt = isoFromEpochSeconds(info.resetsAt);
+    if (type in WINDOWS && !windows.some((window) => window.id === type)) {
+      windows.push(makeWindow(type, usedPercent, resetsAt));
+    }
+    if (type === OVERAGE_INCLUDED_EVENT_TYPE && names.overageIncluded) {
+      windows.push(scopedWindow(names.overageIncluded, usedPercent, resetsAt));
+    }
   }
-  const usedPercent = info.utilization * 100;
-  const resetsAt = isoFromEpochSeconds(info.resetsAt);
-  if (type in WINDOWS) {
-    return { windows: [makeWindow(type, usedPercent, resetsAt)] };
-  }
-  if (type === OVERAGE_INCLUDED_EVENT_TYPE && names.overageIncluded) {
-    return { windows: [scopedWindow(names.overageIncluded, usedPercent, resetsAt)] };
-  }
-  return undefined;
+  return windows.length > 0 ? { windows } : undefined;
 }
 
 /**
@@ -161,7 +178,11 @@ export function claudeUsageResponseToLimits(input: {
   const { response, checkedAt } = input;
   if (!response.rate_limits_available || !response.rate_limits) {
     return {
-      limits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+      // A subscription can have a failed usage read, for example after an HTTP 429.
+      limits: makeUnavailableUsageLimits({
+        checkedAt,
+        reason: response.rate_limits_available ? "probeFailed" : "unsupported",
+      }),
       names: { overageIncluded: undefined },
     };
   }
@@ -195,5 +216,6 @@ export const recordClaudeUsageResponse = (
   input: Parameters<typeof claudeUsageResponseToLimits>[0],
 ): Effect.Effect<ServerProviderUsageLimits> => {
   const { limits, names } = claudeUsageResponseToLimits(input);
+  if (limits.unavailable?.reason === "probeFailed") return Effect.succeed(limits);
   return Ref.set(namesRef, names).pipe(Effect.as(limits));
 };

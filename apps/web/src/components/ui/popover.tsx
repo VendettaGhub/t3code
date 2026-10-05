@@ -37,6 +37,7 @@ const popoverViewportPaddingClassName = {
 function PopoverPopup({
   children,
   className,
+  viewportClassName,
   padding = "default",
   variant = "default",
   width = "auto",
@@ -48,6 +49,7 @@ function PopoverPopup({
   tooltipStyle = false,
   keepMounted = false,
   anchor,
+  demoteUnderModal = false,
   ...props
 }: PopoverPrimitive.Popup.Props & {
   padding?: keyof typeof popoverViewportPaddingClassName;
@@ -60,7 +62,10 @@ function PopoverPopup({
   tooltipStyle?: boolean;
   keepMounted?: PopoverPrimitive.Portal.Props["keepMounted"];
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
+  viewportClassName?: string;
   width?: keyof typeof popoverPopupWidthClassName;
+  /** Step under the modal layer while a modal dialog hides this popover. */
+  demoteUnderModal?: boolean;
 }) {
   // Viewport rekeys its children when the active trigger clears on close. Persistent
   // single-trigger forms need a stable container to retain drafts and submit guards.
@@ -77,6 +82,7 @@ function PopoverPopup({
           variant === "panel"
             ? "z-(--z-sheet) w-[min(var(--thread-details-panel-width),var(--anchor-width))] transition-none"
             : "z-[130]",
+          demoteUnderModal && "aria-hidden:pointer-events-none aria-hidden:z-40!",
         )}
         data-slot="popover-positioner"
         side={side}
@@ -106,6 +112,7 @@ function PopoverPopup({
                 ? "py-1 [--viewport-inline-padding:--spacing(2)]"
                 : popoverViewportPaddingClassName[padding],
               !tooltipStyle && "not-data-transitioning:overflow-y-auto",
+              viewportClassName,
               variant === "panel" &&
                 "overflow-visible py-2 [--viewport-inline-padding:--spacing(2)]",
             )}
@@ -133,6 +140,16 @@ function PopoverTitle({ className, ...props }: PopoverPrimitive.Title.Props) {
   );
 }
 
+function PopoverDescription({ className, ...props }: PopoverPrimitive.Description.Props) {
+  return (
+    <PopoverPrimitive.Description
+      className={cn("text-muted-foreground text-sm", className)}
+      data-slot="popover-description"
+      {...props}
+    />
+  );
+}
+
 export {
   PopoverCreateHandle,
   Popover,
@@ -140,5 +157,6 @@ export {
   PopoverPopup,
   PopoverPopup as PopoverContent,
   PopoverTitle,
+  PopoverDescription,
   PopoverClose,
 };

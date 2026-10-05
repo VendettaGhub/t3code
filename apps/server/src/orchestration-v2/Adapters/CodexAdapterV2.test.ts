@@ -36,6 +36,7 @@ import * as CodexReplay from "effect-codex-app-server/replay";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -1313,6 +1314,19 @@ describe("CodexAdapterV2 fork boundary", () => {
 
       assert.instanceOf(error, ProviderAdapterForkThreadError);
       assert.include(String(error.cause), "provider-turn-missing");
+    }),
+  );
+  it.effect("never substitutes head when selected-turn records are unavailable", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const exit = yield* Effect.exit(
+        CodexAdapterV2.resolveCodexForkBoundary({
+          sourceProviderThread: makeProviderThread(now),
+          providerTurnId: ProviderTurnId.make("provider-turn-missing"),
+          targetThreadId: ThreadId.make("thread-codex-fork-target"),
+        }),
+      );
+      assert.isTrue(Exit.isFailure(exit));
     }),
   );
 });
@@ -7217,59 +7231,72 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
-  it.effect("propagates native thread/fork failures as typed fork errors", () =>
-    Effect.gen(function* () {
-      const nativeThreadId = "fork-failure-source-thread";
-      const preamble = codexReplayPreamble({
-        nativeThreadId,
-        nativeTurnId: "fork-failure-source-turn",
-        prompt: "unused",
-      });
-      const transcript = makeCodexReplayTranscript({
-        scenario: "codex-fork-request-failure",
-        entries: [
-          ...preamble.slice(0, 5),
-          {
-            type: "expect_outbound",
-            label: "thread/fork",
-            frame: {
-              id: 3,
-              method: "thread/fork",
-              params: {
-                threadId: nativeThreadId,
-                lastTurnId: "native-turn-first",
-                config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+  it.effect.each([false, true])(
+    "rejects native thread/fork failures or reused identity, reused=%s",
+    (reusedIdentity) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "fork-failure-source-thread";
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "fork-failure-source-turn",
+          prompt: "unused",
+        });
+        const transcript = makeCodexReplayTranscript({
+          scenario: "codex-fork-request-failure",
+          entries: [
+            ...preamble.slice(0, 5),
+            {
+              type: "expect_outbound",
+              label: "thread/fork",
+              frame: {
+                id: 3,
+                method: "thread/fork",
+                params: {
+                  threadId: nativeThreadId,
+                  lastTurnId: "native-turn-first",
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
               },
             },
-          },
-          {
-            type: "emit_inbound",
-            label: "thread/fork",
-            frame: { id: 3, error: { code: -32000, message: "fork exploded" } },
-          },
-        ],
-      });
-      const harness = yield* makeCodexReplayHarness(transcript);
-      const now = yield* DateTime.now;
-      const firstTurn = codexReplaySourceTurn({
-        id: "provider-turn-first",
-        ordinal: 1,
-        nativeId: "native-turn-first",
-        providerThreadId: harness.providerThread.id,
-        now,
-      });
+            {
+              type: "emit_inbound",
+              label: "thread/fork",
+              frame: reusedIdentity
+                ? {
+                    id: 3,
+                    result: codexReplayThreadResult({
+                      nativeThreadId,
+                      forkedFromId: nativeThreadId,
+                    }),
+                  }
+                : { id: 3, error: { code: -32000, message: "fork exploded" } },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        const now = yield* DateTime.now;
+        const firstTurn = codexReplaySourceTurn({
+          id: "provider-turn-first",
+          ordinal: 1,
+          nativeId: "native-turn-first",
+          providerThreadId: harness.providerThread.id,
+          now,
+        });
 
-      const error = yield* Effect.flip(
-        harness.runtime.forkThread({
-          sourceProviderThread: harness.providerThread,
-          sourceProviderTurns: [firstTurn],
-          providerTurnId: firstTurn.id,
-          targetThreadId: ThreadId.make("thread-fork-failure-target"),
-        }),
-      );
+        const error = yield* Effect.flip(
+          harness.runtime.forkThread({
+            sourceProviderThread: harness.providerThread,
+            sourceProviderTurns: [firstTurn],
+            providerTurnId: firstTurn.id,
+            targetThreadId: ThreadId.make("thread-fork-failure-target"),
+          }),
+        );
 
-      assert.instanceOf(error, ProviderAdapterForkThreadError);
-      assert.include(errorCauseChainText(error), "fork exploded");
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+        assert.instanceOf(error, ProviderAdapterForkThreadError);
+        assert.include(
+          errorCauseChainText(error),
+          reusedIdentity ? "source identity" : "fork exploded",
+        );
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 });

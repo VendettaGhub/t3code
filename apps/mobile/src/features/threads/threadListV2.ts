@@ -44,6 +44,11 @@ export { snoozeWakeLabel };
     inbox the same way and the order survives screens that unmount. */
 export const threadListInboxReturns = createInboxReturnTracker();
 
+/** Sidechats stay in the shell store for history and direct navigation only. */
+export function isMainThread(thread: Pick<EnvironmentThreadShell, "origin">): boolean {
+  return thread.origin == null;
+}
+
 /**
  * Provider drivers for a row's trailing icon stack, back to front. Instances
  * missing from the environment's config are skipped, and an unresolved
@@ -238,6 +243,7 @@ export function getThreadListV2OrderedSection(input: {
   readonly queuedThreadKeys?: ReadonlySet<string>;
 }): EnvironmentThreadShell[] {
   const threads = input.threads.filter((thread) => {
+    if (!isMainThread(thread)) return false;
     if (thread.archivedAt !== null || thread.lineage.relationshipToParent === "subagent")
       return false;
     if (
@@ -676,6 +682,7 @@ export function buildThreadListV2Items(input: {
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   for (const thread of input.threads) {
+    if (!isMainThread(thread)) continue;
     if (thread.archivedAt !== null || thread.lineage.relationshipToParent === "subagent") continue;
     // The server stamps settledOverride for the tail.
     if (input.environmentId !== null && thread.environmentId !== input.environmentId) continue;

@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
@@ -45,18 +46,21 @@ const forkCases = (["codex", "claudeAgent"] as const).flatMap((driverName) => {
     { runEffectWorker: false },
   );
 
-  return (["failed", "interrupted", "cancelled"] as const).map((status) => ({
-    driver,
-    status,
-    instanceId,
-    modelSelection,
-    layer,
-  }));
+  return (["failed", "interrupted", "cancelled", "completed"] as const).flatMap((status) =>
+    (status === "completed" ? [false, true] : [false]).map((nativeBoundary) => ({
+      driver,
+      status,
+      instanceId,
+      modelSelection,
+      layer,
+      nativeBoundary,
+    })),
+  );
 });
 
 it.effect.each(forkCases)(
-  "bounds $driver context when continuing a fork of a $status run",
-  ({ driver, status, instanceId, modelSelection, layer }) =>
+  "bounds $driver context from $status (native boundary: $nativeBoundary)",
+  ({ driver, status, instanceId, modelSelection, layer, nativeBoundary }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -112,7 +116,7 @@ it.effect.each(forkCases)(
       });
       // A cancelled queue entry has no provider turn; an early interruption
       // can have a turn but no native assistant cursor.
-      if (status === "interrupted") {
+      if (status === "interrupted" || nativeBoundary) {
         yield* eventSink.write({
           events: [
             {
@@ -145,7 +149,11 @@ it.effect.each(forkCases)(
                 providerThreadId,
                 nodeId: rootNodeId,
                 runAttemptId: attemptId,
-                nativeTurnRef: { driver, nativeId: "turn:synthetic", strength: "weak" },
+                nativeTurnRef: {
+                  driver,
+                  nativeId: nativeBoundary ? "native-checkpoint" : "turn:synthetic",
+                  strength: "weak",
+                },
                 ordinal: 1,
                 status,
                 startedAt: now,
@@ -175,7 +183,8 @@ it.effect.each(forkCases)(
                 providerThreadId,
                 userMessageId: messageId,
                 rootNodeId: null,
-                activeAttemptId: ordinal === 1 && status === "interrupted" ? attemptId : null,
+                activeAttemptId:
+                  ordinal === 1 && (status === "interrupted" || nativeBoundary) ? attemptId : null,
                 status: ordinal === 1 ? status : "completed",
                 queuePosition: null,
                 requestedAt: now,
@@ -218,6 +227,53 @@ it.effect.each(forkCases)(
           ],
         });
       }
+      const sidechatExit = yield* Effect.exit(
+        orchestrator.dispatch({
+          type: "thread.fork",
+          sidechat: true,
+          commandId: CommandId.make("reject-portable-sidechat"),
+          sourceThreadId,
+          targetThreadId: ThreadId.make("rejected-sidechat"),
+          sourcePoint: { type: "run", runId: sourceRunId },
+          createdBy: "user",
+          creationSource: "web",
+        }),
+      );
+      assert.equal(Exit.isFailure(sidechatExit), !nativeBoundary);
+      if (nativeBoundary) {
+        const sidechatId = ThreadId.make("rejected-sidechat");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("exact-sidechat-send"),
+          threadId: sidechatId,
+          messageId: MessageId.make("sidechat-question"),
+          text: "Side question only",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const child = yield* orchestrator.getThreadProjection(sidechatId);
+        assert.isTrue(child.thread.sidechat);
+        assert.deepEqual(child.providerThreads[0]?.forkedFrom, {
+          providerThreadId,
+          providerTurnId,
+        });
+        // The effect worker is paused; provider execution has not happened yet.
+        assert.isNull(child.contextTransfers[0]?.resolution);
+        assert.lengthOf(child.contextHandoffs, 0);
+        assert.deepEqual(
+          child.messages.map(({ text }) => text),
+          ["Side question only"],
+        );
+        const source = yield* orchestrator.getThreadProjection(sourceThreadId);
+        assert.deepEqual(
+          source.turnItems.map((item) => ("text" in item ? item.text : null)),
+          ["INCLUDED_SOURCE_MARKER", "EXCLUDED_LATER_MARKER"],
+        );
+        return;
+      }
       yield* orchestrator.dispatch({
         type: "thread.fork",
         commandId: CommandId.make("fork-source"),
@@ -227,6 +283,49 @@ it.effect.each(forkCases)(
         createdBy: "user",
         creationSource: "web",
       });
+      const targetBeforeSend = yield* orchestrator.getThreadProjection(targetThreadId);
+      assert.lengthOf(targetBeforeSend.messages, 0);
+      // An already-persisted sidechat must recheck the source at first send,
+      // rather than trust a creation-time capability decision.
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("persist-sidechat-marker"),
+            type: "thread.created",
+            threadId: targetThreadId,
+            occurredAt: now,
+            payload: { ...targetBeforeSend.thread, sidechat: true },
+          },
+        ],
+      });
+      const firstSend = yield* Effect.exit(
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("reject-sidechat-first-send"),
+          threadId: targetThreadId,
+          messageId: MessageId.make("rejected-sidechat-question"),
+          text: "Must not become a portable sidechat",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        }),
+      );
+      assert.isTrue(Exit.isFailure(firstSend));
+      assert.lengthOf((yield* orchestrator.getThreadProjection(targetThreadId)).messages, 0);
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("restore-ordinary-fork-marker"),
+            type: "thread.created",
+            threadId: targetThreadId,
+            occurredAt: now,
+            payload: targetBeforeSend.thread,
+          },
+        ],
+      });
+      if (status === "completed") return;
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make("continue-fork"),

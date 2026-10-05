@@ -36,6 +36,7 @@ import {
 } from "./ContextHandoffBudget.ts";
 import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
 import {
+  ProviderAdapterForkThreadError,
   ProviderAdapterTurnStartError,
   type ProviderAdapterV2Error,
   type ProviderAdapterV2HistoricalContext,
@@ -62,6 +63,7 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 ) {}
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
+const isProviderAdapterForkThreadError = Schema.is(ProviderAdapterForkThreadError);
 
 export interface ProviderTurnStartServiceV2Shape {
   /**
@@ -565,11 +567,15 @@ export const layer: Layer.Layer<
               failure: makeProviderFailure({
                 cause: failed.error,
                 message:
-                  nestedCause instanceof Error
-                    ? nestedCause.message
-                    : typeof nestedCause === "string"
-                      ? nestedCause
-                      : failed.error.message,
+                  projection.thread.sidechat === true &&
+                  (isProviderAdapterForkThreadError(failed.error) ||
+                    failed.signal === "sidechat-context-resume-failure")
+                    ? "The sidechat could not start because its context could be incomplete. The original conversation is unchanged."
+                    : nestedCause instanceof Error
+                      ? nestedCause.message
+                      : typeof nestedCause === "string"
+                        ? nestedCause
+                        : failed.error.message,
                 class: "provider_error",
               }),
             },
@@ -620,9 +626,15 @@ export const layer: Layer.Layer<
           const sourceProviderTurn = sourceProjection.providerTurns.find(
             (candidate) =>
               candidate.id === sourceAttempt?.providerTurnId ||
-              candidate.runAttemptId === sourceAttempt?.id,
+              candidate.runAttemptId === sourceRun?.activeAttemptId,
           );
-          if (sourceRun === undefined || sourceProviderThread === undefined) {
+          if (
+            sourceRun === undefined ||
+            sourceProviderThread === undefined ||
+            (projection.thread.sidechat === true &&
+              (sourceProviderTurn === undefined ||
+                sourceProviderTurn.providerThreadId !== sourceProviderThread.id))
+          ) {
             return yield* new ProviderTurnStartError({
               runId,
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
@@ -642,6 +654,17 @@ export const layer: Layer.Layer<
           );
         }
         if (providerThread.nativeThreadRef === null) {
+          if (projection.thread.sidechat === true) {
+            return yield* loadFromProvider(
+              Effect.fail(
+                new ProviderAdapterForkThreadError({
+                  driver: session.driver,
+                  providerThreadId: providerThread.id,
+                  cause: "Native sidechat context is unavailable.",
+                }),
+              ),
+            );
+          }
           // Hand the run's provider thread to the adapter so it adopts this
           // row's identity when attaching native state. An adapter that mints
           // its own row instead leaves two live rows per app thread, and
@@ -682,6 +705,15 @@ export const layer: Layer.Layer<
         );
         if (resumed._tag === "Success") {
           return resumed.success;
+        }
+        if (projection.thread.sidechat === true) {
+          if (input.willRetry === true) return yield* resumed.failure;
+          yield* settleStartFailure({
+            signal: "sidechat-context-resume-failure",
+            title: "Provider turn failed to start",
+            error: resumed.failure,
+          });
+          return undefined;
         }
 
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {

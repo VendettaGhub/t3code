@@ -1,4 +1,7 @@
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
+import { useNavigate } from "@tanstack/react-router";
+import { readUsagePagePreferences, saveUsagePagePreferences } from "../usage/usagePagePreferences";
+import { ComposerUsageLimitRings } from "./ComposerUsageLimitRings";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -1536,6 +1539,8 @@ export interface ChatComposerProps {
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   bannerItems: readonly ComposerBannerStackItem[];
+  /** Embedded composers can leave pooled quota in the main composer. */
+  hideUsageLimitRings?: boolean | undefined;
   /** Picking /usage-limits from the menu is the action itself; the draft keeps nothing of it. */
   onUsageLimitsCommand?: (() => void) | undefined;
   environmentUnavailable: {
@@ -1682,6 +1687,7 @@ export interface ChatComposerProps {
 // --------------------------------------------------------------------------
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
+  const navigate = useNavigate();
   const {
     composerDraftTarget,
     environmentId,
@@ -2376,6 +2382,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     null,
   );
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
+  const [usageLimitBarVisible, setUsageLimitBarVisible] = useState(false);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
@@ -2635,6 +2642,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           command: "model",
           label: "/model",
           description: "Switch response model for this thread",
+        },
+        {
+          id: "slash:btw",
+          type: "slash-command",
+          command: "btw",
+          label: "/btw",
+          description: "Open a side question from the latest completed turn",
         },
         ...(planModeUiEnabled
           ? ([
@@ -3940,6 +3954,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
           return;
         }
+        if (item.command === "btw") {
+          const replacement = "/btw ";
+          const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+            snapshot.value,
+            trigger.rangeEnd,
+            replacement,
+          );
+          const applied = applyPromptReplacement(
+            trigger.rangeStart,
+            replacementRangeEnd,
+            replacement,
+            { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+          );
+          if (applied) {
+            setComposerHighlightedItemId(null);
+          }
+          return;
+        }
         if (!planModeUiEnabled) return;
         void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
         const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
@@ -5108,7 +5140,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     environmentUnavailable !== null ||
     composerSubmissionError !== null ||
     providerInputSubmissionError !== null ||
-    hasImageAttachmentAttention;
+    hasImageAttachmentAttention ||
+    usageLimitBarVisible;
   const isComposerResting = shouldUseRestingComposerLayout({
     isExistingThread: routeKind === "server" && activeThreadId !== null,
     isMobileViewport,
@@ -5564,9 +5597,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         content: activityStackContent,
       }
     : null;
+  const usageContextHint = props.bannerItems.find((item) =>
+    item.id.startsWith("resume-compaction:"),
+  );
+  const otherBannerItems = props.bannerItems.filter((item) => item !== usageContextHint);
   const bannerStackItems = activityStackItem
-    ? [activityStackItem, ...props.bannerItems]
-    : props.bannerItems;
+    ? [activityStackItem, ...otherBannerItems]
+    : otherBannerItems;
   useEffect(() => {
     if (activeTasksProgress === null || activeTaskSteps === null) {
       setIsTasksDrawerOpen(false);
@@ -6607,7 +6644,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <ComposerBanner.Column>
           {props.queuedRunsControl}
           <ComposerBannerStack
-            key={activeThreadId}
+            key={`banners:${activeThreadId}`}
             className="relative z-0"
             items={bannerStackItems}
           />
@@ -6767,6 +6804,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               />
             </ComposerBanner.Attachment>
           ) : null}
+          <ComposerUsageLimitRings
+            key={`usage:${activeThreadId}`}
+            ringsHidden={props.hideUsageLimitRings === true}
+            {...(usageContextHint ? { contextHint: usageContextHint } : {})}
+            onVisibilityChange={setUsageLimitBarVisible}
+            onMaximize={() => {
+              saveUsagePagePreferences({ ...readUsagePagePreferences(), metric: "limits" });
+              void navigate({ to: "/usage" });
+            }}
+          />
         </ComposerBanner.Column>
         {!isComposerApprovalState ? (
           <ComposerStashBadge

@@ -16,11 +16,10 @@ import {
   type ServerConfig as T3ServerConfig,
   type UsageLimitsReport,
 } from "@t3tools/contracts";
-import {
-  collectProviderUsageLimits,
-  hasProviderUsageLimits,
-  isUsageLimitsCommand,
-} from "@t3tools/shared/usageLimits";
+import { isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
+import { environmentPresentations } from "../../state/presentation";
+import { ComposerUsageLimitRings } from "./ComposerUsageLimits";
+import { collectComposerUsageLimits } from "./ComposerUsageLimits.logic";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
 import {
@@ -102,6 +101,7 @@ import {
   type ComposerSendPresentation,
 } from "./composerSendPresentation";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { parseSideQuestionCommand } from "../sidechat/sidechatCommand";
 import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
@@ -188,6 +188,7 @@ export interface ThreadComposerProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onOpenSideQuestion?: (question: string | null) => void | Promise<void>;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
@@ -410,6 +411,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const showStopAction = !hasContent && props.canStopThread && queuedEdit === null;
 
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const attachmentsUploading =
     props.connectionState === "connected" &&
     composerAttachmentsStillUploading({
@@ -459,29 +461,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     });
   };
   const { onSendMessage, onChangeDraftMessage, onShowUsageLimits } = props;
-  // T3 owns /usage-limits only where Limits has data for the selected provider;
-  // elsewhere the name stays the provider's own and is sent through untouched.
-  const usageLimitsOffered =
-    selectedProviderStatus !== null &&
-    hasProviderUsageLimits(
-      selectedProviderStatus.driver,
-      props.serverConfig?.providers ?? [],
-      props.serverConfig?.usageLimitSources ?? [],
-    );
-  // Answered locally from the last Limits snapshot; the agent never sees it.
+  // The ring row and command share the same all-environment projection.
+  const usageLimitsOffered = useMemo(
+    () => collectComposerUsageLimits(presentations, 0) !== null,
+    [presentations],
+  );
+  // Answered locally from the current Limits snapshots; the agent never sees it.
   const openUsageLimits = useCallback(() => {
-    const report = collectProviderUsageLimits(
-      currentModelSelection.instanceId,
-      props.serverConfig?.providers ?? [],
-      props.serverConfig?.usageLimitSources ?? [],
-      Date.now(),
-    );
+    const report = collectComposerUsageLimits(presentations, Date.now());
     onShowUsageLimits(report);
     if (!report) {
-      Alert.alert("Usage limits unavailable", "This provider does not currently report limits.");
+      Alert.alert("Usage limits unavailable", "No provider currently reports limits.");
     }
     return report !== null;
-  }, [currentModelSelection.instanceId, onShowUsageLimits, props.serverConfig]);
+  }, [onShowUsageLimits, presentations]);
 
   const composerMenu = useComposerCommandMenu({
     draftMessage: props.draftMessage,
@@ -605,6 +598,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         if (openUsageLimits()) onChangeDraftMessage("");
         return;
       }
+      const sideQuestion = parseSideQuestionCommand(props.draftMessage);
+      if (sideQuestion !== null && props.onOpenSideQuestion) {
+        await props.onOpenSideQuestion(sideQuestion.question);
+        return;
+      }
       const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
       if (inFlightThreadIdsRef.current.has(threadKey)) return;
       inFlightThreadIdsRef.current.add(threadKey);
@@ -633,6 +631,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       openUsageLimits,
       usageLimitsOffered,
       onSendMessage,
+      props.onOpenSideQuestion,
       props.environmentId,
       props.environmentLabel,
       props.selectedThread.id,
@@ -808,6 +807,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Text className="text-xs text-foreground">Model unavailable. Open model settings.</Text>
           </Pressable>
         ) : null}
+
+        <ComposerUsageLimitRings onPress={openUsageLimits} />
 
         <ComposerSurface
           style={

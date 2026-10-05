@@ -19,6 +19,45 @@ import * as DateTime from "effect/DateTime";
 
 import { formatSubagentDisplayTitle } from "./subagentDisplay.ts";
 
+export type SidechatOrigin =
+  | NonNullable<OrchestrationV2ThreadShell["origin"]>
+  | {
+      readonly threadId: ThreadId;
+      readonly runId: RunId;
+      readonly createdAt: string;
+    };
+
+export function sidechatOrigin(
+  thread: Pick<OrchestrationV2ThreadShell, "origin" | "sidechat" | "forkedFrom" | "createdAt">,
+): SidechatOrigin | null {
+  if (thread.origin) return thread.origin;
+  return thread.sidechat && thread.forkedFrom?.type === "run"
+    ? {
+        threadId: thread.forkedFrom.threadId,
+        runId: thread.forkedFrom.runId,
+        createdAt: DateTime.formatIso(thread.createdAt),
+      }
+    : null;
+}
+
+export function sidechatOriginPoint(origin: SidechatOrigin): string {
+  return "runId" in origin ? origin.runId : origin.turnId;
+}
+
+export function supportsNativeSidechat(
+  projection: OrchestrationV2ThreadProjection | null,
+): boolean {
+  const session = projection?.providerSessions.findLast(
+    (candidate) => candidate.providerInstanceId === projection.thread.providerInstanceId,
+  );
+  const capabilities = session?.capabilities;
+  return (
+    capabilities?.threads.canForkThread === true &&
+    capabilities.threads.canForkFromTurn &&
+    capabilities.identity.nativeThreadIds === "strong"
+  );
+}
+
 export interface EnvironmentProject extends OrchestrationProjectShell {
   readonly environmentId: EnvironmentId;
 }
@@ -86,6 +125,7 @@ function threadRunStatusIsActive(status: ThreadRuntimeSummary["status"]): boolea
 }
 
 export interface EnvironmentThreadShell {
+  readonly origin?: SidechatOrigin | null;
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
   readonly projectId: ProjectId;
@@ -239,6 +279,7 @@ export function presentThreadShell(
     branchPullRequest: thread.branchPullRequest ?? null,
     lineage: thread.lineage,
     forkedFrom: thread.forkedFrom,
+    origin: sidechatOrigin(thread),
     activeProviderThreadId: thread.activeProviderThreadId,
     latestRun,
     runtime: shellRuntime(thread),

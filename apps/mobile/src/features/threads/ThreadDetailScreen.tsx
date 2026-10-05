@@ -81,7 +81,9 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceContentWidth } from "../layout/workspace-content-width";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import { collectProviderUsageLimits } from "@t3tools/shared/usageLimits";
+import { useAtomValue } from "@effect/atom-react";
+import { environmentPresentations } from "../../state/presentation";
+import { collectComposerUsageLimits } from "./ComposerUsageLimits.logic";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
@@ -144,6 +146,7 @@ export interface ThreadDetailScreenProps {
   readonly environmentLabel: string | null;
   readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
   readonly onDismissFeedback: (id: MessageId) => void;
+  readonly onAppendSidechatMessage?: (messageId: MessageId, text: string) => void;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
   readonly activityRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
@@ -202,6 +205,7 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
+  readonly onOpenSideQuestion?: (question: string | null) => void | Promise<void>;
   readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
   /** Whether the model picker may offer providers other than this thread's. */
@@ -543,22 +547,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   if (usageLimitsPanel !== null && usageLimitsPanel.key !== usageLimitsKey) {
     setUsageLimitsPanel(null);
   }
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const usageLimitsReport = useMemo(
     () =>
       usageLimitsPanel !== null && usageLimitsPanel.key === usageLimitsKey
-        ? collectProviderUsageLimits(
-            props.selectedThread.modelSelection.instanceId,
-            props.serverConfig?.providers ?? [],
-            props.serverConfig?.usageLimitSources ?? [],
-            usageLimitsPanel.now,
-          )
+        ? collectComposerUsageLimits(presentations, usageLimitsPanel.now)
         : null,
-    [
-      props.selectedThread.modelSelection.instanceId,
-      props.serverConfig,
-      usageLimitsKey,
-      usageLimitsPanel,
-    ],
+    [presentations, usageLimitsKey, usageLimitsPanel],
   );
   const showUsageLimits = useCallback(
     (report: UsageLimitsReport | null) =>
@@ -1104,6 +1099,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onEndFollowEnabledChange={setEndFollowEnabled}
               skills={selectedProviderSkills}
               onUseArtifactTemplate={handleUseArtifactTemplate}
+              onAppendSidechatMessage={props.onAppendSidechatMessage}
             />
           </RenderErrorBoundary>
         </View>
@@ -1196,11 +1192,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     entering={FadeInDown.duration(220)}
                     exiting={FadeOut.duration(140)}
                   >
-                    <ComposerUsageLimits
-                      report={usageLimitsReport}
-                      environmentId={props.environmentId}
-                      onClose={dismissUsageLimits}
-                    />
+                    <ComposerUsageLimits report={usageLimitsReport} onClose={dismissUsageLimits} />
                   </Animated.View>
                 ) : null}
                 {props.creationState?.kind === "failed" ? (
@@ -1348,6 +1340,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       onRemoveDraftImage={props.onRemoveDraftImage}
                       onStopThread={props.onStopThread}
                       onSendMessage={handleSendMessage}
+                      onOpenSideQuestion={props.onOpenSideQuestion}
                       onShowUsageLimits={showUsageLimits}
                       canSwitchProvider={props.canSwitchThreadProvider}
                       onUpdateModelSelection={props.onUpdateThreadModelSelection}
